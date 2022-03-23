@@ -1,0 +1,22 @@
+[package]
+name = "aerology"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+object = "*"
+goblin = "0.5.1"
+zip = "0.5.13"
+capstone = "0.10"
+thiserror = "*"
+scroll = "0.11"
+gimli = "0.26"
+humansize = "1.1"
+
+[dependencies.clap]
+version = "3.1"
+features = ["derive"]
+
+[dependencies.miette]
+version = "4.2"
+features = ["fancy"]
