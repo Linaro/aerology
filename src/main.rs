@@ -16,11 +16,11 @@ use object::{Object, ObjectSection, ObjectSymbol};
 
 use goblin::elf32::Note;
 
-use gimli::UnwindSection;
-
 use scroll::{IOwrite, Pwrite};
 
 use zip::write::FileOptions;
+
+mod error;
 
 mod pack;
 use pack::{
@@ -35,33 +35,7 @@ mod gdb;
 use gdb::Client as GdbClient;
 
 mod core;
-use crate::core::Core;
-
-#[allow(unused)]
-#[derive(Debug, Clone, Copy)]
-#[repr(u16)]
-enum Regs {
-    R0 = 0,
-    R1,
-    R2,
-    R3,
-    R4,
-    R5,
-    R6,
-    R7,
-    R8,
-    R9,
-    R10,
-    R11,
-    R12,
-    SP,
-    LR,
-    PC,
-    PSR,
-    MSP,
-    PSP,
-}
-
+use crate::core::{Core, ExtractedSymbol, SymVal, Regs};
 
 
 #[derive(Parser, Debug)]
@@ -231,13 +205,13 @@ fn print_config(args: DtsArgs) -> Result<()> {
     print_from_pack(args.pack_file, "zephyr/.config", "Zephyr configuration")
 }
 
-    struct Sec {
-        eid: usize,
-        sec: String,
-        base: u32,
-        size: u32,
-        perms: String,
-    }
+struct Sec {
+    eid: usize,
+    sec: String,
+    base: u32,
+    size: u32,
+    perms: String,
+}
 
 fn print_segments(args: SegmentsArgs) -> Result<()> {
     let pack: Pack = args.pack_file.try_into()?;
@@ -610,98 +584,6 @@ fn print_symbol_info(args: DisArgs) -> Result<()> {
     Ok(())
 }
 
-
-#[derive(Debug)]
-enum SymVal {
-    CString(String, usize),
-    Unsigned(u64),
-    Signed(i64),
-    Float(f64),
-    Array(Vec<ExtractedSymbol>),
-    Struct(Vec<(String, Option<ExtractedSymbol>)>),
-}
-
-#[derive(Debug)]
-struct ExtractedSymbol {
-    typ: pack::Gid,
-    val: SymVal,
-}
-
-fn symbol_value(typ: pack::Gid, pack: &Pack, addr: u32, core: &Core) -> Option<ExtractedSymbol> {
-    use pack::{Typ::*, PtrType, Member, Primitive};
-    let actual_type = pack.lookup_type(typ);
-    match actual_type? {
-        Pri(&Primitive{size, encoding, ..}) => {
-            let mut bytes = vec![0u8; size];
-            core.read_into(addr, &mut bytes).ok()?;
-            use pack::PrimEncoding::*;
-            let val = match (encoding.unwrap_or(Unsigned), size) {
-                (Unsigned, 1) => SymVal::Unsigned(u8::from_le_bytes(bytes.try_into().unwrap()) as u64),
-                (Unsigned, 2) => SymVal::Unsigned(u16::from_le_bytes(bytes.try_into().unwrap()) as u64),
-                (Unsigned, 4) => SymVal::Unsigned(u32::from_le_bytes(bytes.try_into().unwrap()) as u64),
-                (Unsigned, 8) => SymVal::Unsigned(u64::from_le_bytes(bytes.try_into().unwrap()) as u64),
-                (Signed, 1) => SymVal::Signed(i8::from_le_bytes(bytes.try_into().unwrap()) as i64),
-                (Signed, 2) => SymVal::Signed(i16::from_le_bytes(bytes.try_into().unwrap()) as i64),
-                (Signed, 4) => SymVal::Signed(i32::from_le_bytes(bytes.try_into().unwrap()) as i64),
-                (Signed, 8) => SymVal::Signed(i64::from_le_bytes(bytes.try_into().unwrap()) as i64),
-                (Float, 4) => SymVal::Float(f32::from_le_bytes(bytes.try_into().unwrap()) as f64),
-                (Float, 8) => SymVal::Float(f64::from_le_bytes(bytes.try_into().unwrap()) as f64),
-                _ => return None,
-            };
-            Some(ExtractedSymbol{ typ, val })
-        }
-        Ptr(&PtrType{size, ..}) => {
-            // TODO v
-            assert!(size == 4);
-            let mut bytes = [0u8; 4];
-            core.read_into(addr, &mut bytes).ok()?;
-            let dest_addr = u32::from_le_bytes(bytes);
-            let val = SymVal::Unsigned(dest_addr as u64);
-            Some(ExtractedSymbol{ typ, val })
-        }
-        Arr(arr) => {
-            let arr_size = pack.size_of(typ)?;
-            let stride = pack.size_of(arr.typ)?;
-            if Some("char") == pack.type_to_string(arr.typ).as_deref() {
-                let mut out = vec![0u8; arr_size];
-                core.read_into(addr, &mut out).ok()?;
-                let string = if let Some(offset) = out.iter().position(|&c| c == '\0' as u8) {
-                    String::from_utf8_lossy(&out[..offset])
-                } else {
-                    String::from_utf8_lossy(&out)
-                };
-                let val = SymVal::CString(string.to_string(), arr_size);
-                Some(ExtractedSymbol{ typ, val})
-            } else {
-                let mut out = Vec::new();
-                let arr_size = arr_size as u32;
-                for dest_addr in (addr..addr+arr_size).step_by(stride) {
-                    out.push(symbol_value(arr.typ, pack, dest_addr, core)?);
-                }
-                let val = SymVal::Array(out);
-                Some(ExtractedSymbol{ typ, val })
-            }
-        }
-        Srt(srt) => {
-            let size = pack.size_of(typ)?;
-            let mut bytes = vec![0u8; size];
-            core.read_into(addr, &mut bytes).ok()?;
-            let members = pack.struct_members(srt)?;
-            let mut out = Vec::with_capacity(members.len());
-            for (offset, m) in members {
-                for Member{typ: memb_type, name, ..} in m {
-                    if let Some(name) = name {
-                        let memb_addr = addr + offset as u32;
-                        out.push((name.clone(), symbol_value(memb_type, pack, memb_addr, core)));
-                    }
-                }
-            }
-            let val = SymVal::Struct(out);
-            Some(ExtractedSymbol{ typ, val })
-        }
-    }
-}
-
 fn print_extracted_symbol(sym: ExtractedSymbol, pack: &Pack) {
     fn indent(depth: usize) {
         for _ in 0..depth {
@@ -767,162 +649,7 @@ fn print_extracted_symbol(sym: ExtractedSymbol, pack: &Pack) {
     inner(sym, pack, 0);
 }
 
-fn step_query(
-    member: &str, 
-    addr: &BTreeSet<u32>, 
-    typ: pack::Gid, 
-    pack: &Pack, 
-    core: &Core
-) -> Option<(BTreeSet<u32>, pack::Gid)> {
-    use pack::{Typ::*};
-    match pack.lookup_type(typ)? {
-        Pri(_) => None,
-        Ptr(ptr) => {
-            // TODO v
-            assert!(ptr.size == 4);
-            let mut bytes = [0u8; 4];
-            let dest_addrs: BTreeSet<_> = addr.iter().filter_map(|&a| {
-                core.read_into(a, &mut bytes).ok()?;
-                Some(u32::from_le_bytes(bytes))
-            }).collect();
-            let dest_type = ptr.typ?;
-            if member == "*" {
-                Some((dest_addrs, dest_type))
-            } else if dest_addrs.iter().all(|&da| core.addr_present(da)) {
-                step_query(member, &dest_addrs, dest_type, pack, core)
-            } else {
-                None
-            }
-        }
-        Arr(arr) => {
-            if !member.starts_with("[") || !member.ends_with("]") {
-                return None;
-            }
-            if member == "[]" {
-                let arr_len = pack.array_len(arr)? as u32;
-                let stride = pack.size_of(arr.typ)? as u32;
-                let dest_addrs = addr
-                    .into_iter()
-                    .map(|a| (0..arr_len).filter_map(move |ia| 
-                        a.checked_add(ia * stride)
-                    ))
-                    .flatten()
-                    .collect();
-                Some((dest_addrs, arr.typ))
-            } else {
-                let member_num: u32 = (&member[1..member.len()-1]).parse().ok()?;
-                let arr_len = pack.array_len(arr)? as u32;
-                if member_num >= arr_len {
-                    return None;
-                }
-                let stride = pack.size_of(arr.typ)? as u32;
-                let dest_addrs = addr.into_iter().filter_map(|a| 
-                    a.checked_add(stride * member_num
-                )).collect();
-                Some((dest_addrs, arr.typ))
-            }
-        }
-        Srt(srt) => {
-            if member.starts_with("llnodes(") && member.ends_with(")") {
-                let next_member = &member["llnodes(".len()..member.len() - 1];
-                let (next_member, _outer_type) = if let Some((outer_type, next_member)) = next_member.split_once(",") {
-                    (next_member, Some(outer_type))
-                } else {
-                    (next_member, None)
-                };
-                let (heads, typ) = step_query(next_member, addr, typ, pack, core)?;
-                let mut nodes = heads.clone();
-                let mut addr = heads.clone();
-                while let Some((node_addrs, _)) 
-                    = step_query(next_member, &addr, typ, pack, core) 
-                {
-                    if node_addrs == heads || addr == node_addrs {
-                        break
-                    } else {
-                        nodes.extend(node_addrs.clone());
-                        addr = node_addrs;
-                    }
-                }
-                if nodes.is_empty() {
-                    None
-                } else {
-                    Some((nodes, typ))
-                }
-            } else {
-                let (offset, typ) = pack.offset_of(member, &srt.gid)?;
-                let dest_addr = addr
-                    .into_iter()
-                    .filter_map(|a| a.checked_add(offset as u32))
-                    .collect();
-                Some((dest_addr, typ))
-            } 
-        }
-    }
-}
-
-fn get_start_symbols<'a>(
-    pack: &'a Pack, 
-    start_symbol: &str, 
-    executable: Option<&str>
-) -> Option<Vec<(u32, pack::Gid)>> {
-    if start_symbol.starts_with("(") && start_symbol.ends_with(")") {
-        let types = pack.lookup_type_byname(&start_symbol[1..start_symbol.len() -1])?;
-        let mut symbols = BTreeMap::new();
-        for t in types {
-            if let Some(syms_with_type) = pack.symbols_with_type(t){
-                for sym in syms_with_type {
-                    if executable.is_none() || executable == pack.eid_to_name(sym.eid) {
-                        symbols.insert(sym.addr, *t);
-                    }
-                }
-            }
-        }
-        Some(symbols.into_iter().collect())
-    } else {
-        let mut symbols: BTreeMap<_, (_, _)> = BTreeMap::new();
-        for symlookup in pack.lookup_symbol(start_symbol) {
-            use pack::SymLookup::*;
-            match symlookup {
-                Sym(&pack::Symbol{addr, eid, ref name, ..}) => {
-                    if executable.is_none() || executable == pack.eid_to_name(eid) {
-                        let entry = symbols.entry((name, eid)).or_default();
-                        entry.0 = Some(addr);
-                    }
-                }
-                Var(&pack::Variable{ eid, typ, ref name, ..}) => {
-                    if executable.is_none() || executable == pack.eid_to_name(eid) {
-                        let entry = symbols.entry((name, eid)).or_default();
-                        entry.1 = Some(typ);
-                    }
-                }
-                _ => {}
-            }
-        }
-        let symbols = symbols.into_values().filter_map(|at| match at {
-            (Some(a), Some(t)) => Some((a, t)),
-            _ => None,
-        }).collect();
-        Some(symbols)
-    }
-}
-
-fn query<'a>(
-    parts: impl Iterator<Item=&'a str>, 
-    mut addr: BTreeSet<u32>, 
-    mut typ: pack::Gid, 
-    pack: &Pack, 
-    core: &Core
-) -> Option<(BTreeSet<u32>, pack::Gid)> {
-    for member in parts {
-        let (next_addr, next_typ) = step_query(member, &addr, typ, &pack, &core)?;
-        addr = next_addr;
-        typ = next_typ;
-    }
-    Some((addr, typ))
-}
-
 fn query_symbols(DisArgs{ pack_file, symbol }: DisArgs) -> Result<()> {
-    let pack: Pack = pack_file.clone().try_into()?;
     let core: Core = pack_file.try_into()?;
     
     let (executable, symbol) = if let Some((exec, symbol)) = symbol.split_once("::") {
@@ -933,16 +660,16 @@ fn query_symbols(DisArgs{ pack_file, symbol }: DisArgs) -> Result<()> {
     let mut parts = symbol.split(".");
     // TODO---------------------------v
     let start_symbol = parts.next().unwrap();
-    let addresses = get_start_symbols(&pack, start_symbol, executable).unwrap_or_default();
+    let addresses = core.get_start_symbols(start_symbol, executable).unwrap_or_default();
     for (addr, typ) in addresses.into_iter() {
         let parts = parts.clone();
         let mut aset = BTreeSet::new();
         aset.insert(addr);
-        if let Some((addr, typ)) = query(parts, aset, typ, &pack, &core) {
+        if let Some((addr, typ)) = core.query(parts, aset, typ) {
             for a in addr {
-                if let Some(val) = symbol_value(typ, &pack, a, &core) {
+                if let Some(val) = core.symbol_value(typ, a) {
                     print!("{:x}: ", a);
-                    print_extracted_symbol(val, &pack);
+                    print_extracted_symbol(val, &core.pack);
                     println!("");
                 }
             }
@@ -959,9 +686,8 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
     const SIZE_QUERY: &str = "stack_info.size";
     const START_QUERY: &str = "stack_info.start";
     const PSP_QUERY: &str = "callee_saved.psp";
-    let pack: Pack = args.pack_file.clone().try_into()?;
     let core: Core = args.pack_file.try_into()?;
-    let addresses = get_start_symbols(&pack, START_SYMBOL, EXECUTABLE).unwrap_or_default();
+    let addresses = core.get_start_symbols(START_SYMBOL, EXECUTABLE).unwrap_or_default();
     macro_rules! or_continue {
         ($q:expr) => { if let Some(r) = $q { r } else { continue; } }
     }
@@ -969,19 +695,19 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
         let mut aset = BTreeSet::new();
         aset.insert(addr);
         let (thread_addrs, thread_typ) = or_continue!(
-            query(THREAD_QUERY.split("."), aset, typ, &pack, &core) 
+            core.query(THREAD_QUERY.split("."), aset, typ) 
         );
         let (thread_name, name_typ) = or_continue!(
-            query(NAME_QUERY.split("."), thread_addrs.clone(), thread_typ, &pack, &core) 
+            core.query(NAME_QUERY.split("."), thread_addrs.clone(), thread_typ) 
         );
         let (thread_size, size_typ) = or_continue!( 
-            query(SIZE_QUERY.split("."), thread_addrs.clone(), thread_typ, &pack, &core) 
+            core.query(SIZE_QUERY.split("."), thread_addrs.clone(), thread_typ) 
         );
         let (thread_start, start_typ) = or_continue!( 
-            query(START_QUERY.split("."), thread_addrs.clone(), thread_typ, &pack, &core) 
+            core.query(START_QUERY.split("."), thread_addrs.clone(), thread_typ) 
         );
         let (thread_psp, psp_typ) = or_continue!(
-            query(PSP_QUERY.split("."), thread_addrs.clone(), thread_typ, &pack, &core) 
+            core.query(PSP_QUERY.split("."), thread_addrs.clone(), thread_typ) 
         );
         let mut out = Vec::with_capacity(thread_name.len());
         for (((&name_addr, &size_addr), &psp_addr), &start_addr) in 
@@ -991,10 +717,10 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
                     Some(ExtractedSymbol{typ: _, val: SymVal::Unsigned(size)}),
                     Some(ExtractedSymbol{typ: _, val: SymVal::Unsigned(start)}),
                     Some(ExtractedSymbol{typ: _, val: SymVal::Unsigned(psp)}))
-                =  (symbol_value(name_typ, &pack, name_addr, &core),
-                    symbol_value(size_typ, &pack, size_addr, &core),
-                    symbol_value(start_typ, &pack, start_addr, &core),
-                    symbol_value(psp_typ, &pack, psp_addr, &core)) 
+                =  (core.symbol_value(name_typ, name_addr),
+                    core.symbol_value(size_typ, size_addr),
+                    core.symbol_value(start_typ, start_addr),
+                    core.symbol_value(psp_typ, psp_addr)) 
             {
                 out.push((name, size, start, psp))
             }
@@ -1039,241 +765,8 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
     Ok(())
 }
 
-fn do_exception_return(
-    core: &core::Core, 
-    regs: &mut BTreeMap<u16, u32>, 
-) -> Option<()> {
-    const EXC_RET_PAYLOAD: u32 = 0xffff_ff00;
-    let payload = regs.get(&(Regs::LR as u16))?;
-    if payload & EXC_RET_PAYLOAD != EXC_RET_PAYLOAD {
-        return None;
-    }
-    let secure_stack = payload & (1 << 6) != 0;
-    let default_stacking = payload & (1 << 5) != 0;
-    let is_fp_standard = payload & (1 << 4) != 0;
-    let _from_mode = payload & (1 << 3) != 0;
-    let sp_sel = payload & (1 << 2) != 0;
-    let _secure_exception = payload & (1 << 0) != 0;
-    let mut cur_sp = if sp_sel {
-        *regs.get(&(Regs::PSP as u16))?
-    } else {
-        *regs.get(&(Regs::MSP as u16))?
-    };
-    if default_stacking && secure_stack {
-        // skip over the "Integrity signature" and "Reserved" fields
-        // cur_sp += 2 * 4;
-        for regnum in [
-            Regs::R4,
-            Regs::R5,
-            Regs::R6,
-            Regs::R7,
-            Regs::R8,
-            Regs::R9,
-            Regs::R10,
-            Regs::R11,
-            Regs::R0,
-            Regs::R1,
-            Regs::R2,
-            Regs::R3,
-            Regs::R12,
-            Regs::LR,
-            Regs::PC,
-            Regs::PSR,
-        ] {
-            let mut bytes = [0u8; 4];
-            core.read_into(cur_sp, &mut bytes).ok()?;
-            regs.insert(regnum as u16, u32::from_le_bytes(bytes));
-            cur_sp += 4;
-        }
-        if !is_fp_standard {
-            // Adjust cur_sp for fp stack frame
-            unimplemented!();
-        }
-        regs.insert(Regs::SP as u16, cur_sp);
-        Some(())
-    } else {
-        for regnum in [
-            Regs::R0,
-            Regs::R1,
-            Regs::R2,
-            Regs::R3,
-            Regs::R12,
-            Regs::LR,
-            Regs::PC,
-            Regs::PSR,
-        ] {
-            let mut bytes = [0u8; 4];
-            core.read_into(cur_sp, &mut bytes).ok()?;
-            regs.insert(regnum as u16, u32::from_le_bytes(bytes));
-            cur_sp += 4;
-        }
-        if !is_fp_standard {
-            // Adjust cur_sp for fp stack frame
-            cur_sp += 18 * 4;
-        }
-        regs.insert(Regs::SP as u16, cur_sp);
-        Some(())
-    }
-}
-
-#[allow(dead_code)]
-fn pretty_print_regs(regs: &BTreeMap<u16, u32>, prefix: &str) {
-    use Regs::*;
-    for reg in [R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, SP, LR, PC, PSR] {
-        let regnum = reg as u16;
-        if regnum % 4 == 0 {
-            print!("{}", prefix);
-        }
-        let val = if let Some(&v) = regs.get(&regnum) {
-            format!("{:08x}", v)
-        } else {
-            format!("{:->8}", "")
-        };
-        print!("{: <3} {} ", format!("{:?}", reg), val);
-        if regnum % 4 == 3 {
-            println!("");
-        }
-    }
-    println!("")
-}
-
-fn do_backtrace<F>(
-    core: &Core, 
-    pack: &Pack, 
-    thread: (u32, pack::Gid), 
-    queries: &BTreeMap<u16, (&str, Option<F>)>,
-    name_q: Option<&str>,
-    print_regs: bool,
-) -> Option<()>
-where F: Fn(u32) -> u32
-{
-    let (thread_addr, thread_typ) = thread;
-    let mut regs = BTreeMap::new();
-    let frame = pack.debug_frame(thread_typ.eid)?;
-    let mut thread_addrs = BTreeSet::new();
-    thread_addrs.insert(thread_addr);
-    for (regnum, (q, transformer)) in queries {
-        let (addr, typ)= query(
-            q.split("."), 
-            thread_addrs.clone(), 
-            thread_typ, 
-            pack,
-            core
-        )?;
-        let addr = addr.into_iter().next()?;
-        let reg_val = symbol_value(typ, pack, addr, core)?;
-        match reg_val.val {
-            SymVal::Unsigned(val) => {
-                let mut val = val as u32;
-                if let Some(f) = transformer {
-                    val = f(val);
-                }
-                regs.insert(*regnum, val);
-            }
-            _ => {}
-        }
-    }
-    let name = if let Some(nq) = name_q {
-        let (addr, typ) = query(
-            nq.split("."),
-            thread_addrs.clone(), 
-            thread_typ, 
-            pack,
-            core,
-        )?;
-        let addr = addr.into_iter().next()?;
-        let reg_val = symbol_value(typ, pack, addr, core)?;
-        match reg_val.val {
-            SymVal::CString(s, ..) => Some(s),
-            _ => None
-        }
-    } else {
-        None
-    };
-    println!(
-        "Thread {}::{}",
-        pack.eid_to_name(thread_typ.eid).unwrap(), 
-        name.unwrap_or_else(|| format!("{:08x}", thread_addr))
-    );
-    loop {
-        while do_exception_return(&core, &mut regs).is_some() { }
-        let bases = gimli::BaseAddresses::default();
-        let mut ctx = gimli::UnwindContext::new();
-        let pc = *regs.get(&(Regs::PC as u16))?;
-        if let Ok(unwind_info) = frame.unwind_info_for_address(
-            &bases,
-            &mut ctx,
-            pc as u64,
-            gimli::DebugFrame::cie_from_offset,
-        ) {
-            use gimli::read::CfaRule::*;
-            let frame_addr = match unwind_info.cfa() {
-                RegisterAndOffset{register, offset} => {
-                    if let Some(&v) = regs.get(&register.0) {
-                        v as i64 + offset
-                    } else {
-                        break
-                    }
-                }
-                e => {
-                    eprintln!("unhandled cfa rule {:?}", e);
-                    unimplemented!()
-                }
-            };
-            for &(reg, ref rule) in unwind_info.registers() {
-                use gimli::read::RegisterRule::*;
-                match rule {
-                    Undefined | SameValue | Architectural => (),
-                    Offset(o) => {
-                        let mut bytes = [0u8; 4];
-                        let addr = (frame_addr + o) as u32;
-                        core.read_into(addr, &mut bytes).ok()?;
-                        let val = u32::from_le_bytes(bytes);
-                        regs.insert(reg.0, val);
-                    }
-                    e => {
-                        eprintln!("unimplemented reg rule {:?}", e);
-                        unimplemented!()
-                    }
-                }
-            }
-            regs.insert(Regs::SP as u16, frame_addr as u32);
-        }
-        let this_pc = *regs.get(&(Regs::PC as u16))?;
-        let next_pc = *regs.get(&(Regs::LR as u16))?;
-        let func = pack.nearest_elf_symbol(this_pc & !1);
-        let func = match func {
-            Some(pack::Symbol{name, ..}) => &name,
-            None =>"<unknown>",
-        };
-        let will_exit = pc & !1 == next_pc & !1;
-        let prefix = if will_exit {
-            "  └─ "
-        } else {
-            "  ├─ "
-        };
-        println!("{}{:08x} in {}", prefix, this_pc, func);
-        if print_regs {
-            let prefix = if will_exit {
-                "     "
-            } else {
-                "  │  "
-            };
-            pretty_print_regs(&regs, prefix);
-        }
-        if will_exit {
-            break
-        }
-        regs.insert(Regs::PC as u16, next_pc);
-    }
-    None
-}
-
 fn print_backtrace(args: BtArgs) -> Result<()> {
-    const EXECUTABLE: Option<&str> = Some("zephyr");
-    const START_SYMBOL: &str = "_kernel";
     const THREAD_QUERY: &str = "threads.llnodes(next_thread)";
-    let pack: Pack = args.pack_file.clone().try_into()?;
     let core: Core = args.pack_file.try_into()?;
     let mut z_reg_queries = BTreeMap::new();
     z_reg_queries.insert(Regs::LR as u16, ("arch.mode", Some(Box::new(|m| 0xffffff00u32 | m >> 8))));
@@ -1286,7 +779,7 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
     z_reg_queries.insert(Regs::R9 as u16, ("callee_saved.v6", None));
     z_reg_queries.insert(Regs::R10 as u16, ("callee_saved.v7", None));
     z_reg_queries.insert(Regs::R11 as u16, ("callee_saved.v8", None));
-    let addresses = get_start_symbols(&pack, START_SYMBOL, EXECUTABLE).unwrap_or_default();
+    let addresses = core.get_start_symbols("_kernel", Some("zephyr")).unwrap_or_default();
     macro_rules! or_continue {
         ($q:expr) => { if let Some(r) = $q { r } else { continue; } }
     }
@@ -1294,12 +787,10 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
         let mut aset = BTreeSet::new();
         aset.insert(addr);
         let (thread_addrs, thread_typ) = or_continue!(
-            query(THREAD_QUERY.split("."), aset, typ, &pack, &core) 
+            core.query(THREAD_QUERY.split("."), aset, typ) 
         );
         for threadaddr in thread_addrs {
-            do_backtrace(
-                &core,
-                &pack,
+            core.do_backtrace(
                 (threadaddr, thread_typ),
                 &z_reg_queries,
                 Some("name"),
@@ -1310,17 +801,15 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
     let mut tfm_reg_queries: BTreeMap<_, (_, Option<Box<dyn Fn(u32) -> u32>>)> = BTreeMap::new();
     tfm_reg_queries.insert(Regs::LR as u16, ("ctx_ctrl.exc_ret", None));
     tfm_reg_queries.insert(Regs::PSP as u16, ("ctx_ctrl.sp", None));
-    let addresses = get_start_symbols(&pack, "partition_listhead", Some("tfm_s")).unwrap_or_default();
+    let addresses = core.get_start_symbols("partition_listhead", Some("tfm_s")).unwrap_or_default();
     for (addr, typ) in addresses.into_iter() {
         let mut aset = BTreeSet::new();
         aset.insert(addr);
         let (addrs, thread_typ)= or_continue!(
-            query("llnodes(next).*".split("."), aset, typ, &pack, &core) 
+            core.query("llnodes(next).*".split("."), aset, typ) 
         );
         for threadaddr in addrs {
-            do_backtrace(
-                &core,
-                &pack,
+            core.do_backtrace(
                 (threadaddr, thread_typ),
                 &tfm_reg_queries,
                 None,
@@ -1363,7 +852,6 @@ fn hex_dump(address: u32, buff: &[u8]) {
 }
 
 fn hexdump_value(args: DisArgs) -> Result<()> {
-    let pack: Pack = args.pack_file.clone().try_into()?;
     let (executable, symbol) = if let Some((exec, symbol)) = args.symbol.split_once("::") {
         (Some(exec), symbol)
     } else {
@@ -1372,27 +860,27 @@ fn hexdump_value(args: DisArgs) -> Result<()> {
     let mut parts = symbol.split(".");
     // TODO---------------------------v
     let start_symbol = parts.next().unwrap();
-    let addresses = get_start_symbols(&pack, start_symbol, executable).unwrap_or_default();
     let core: Core = args.pack_file.try_into()?;
+    let addresses = core.get_start_symbols(start_symbol, executable).unwrap_or_default();
     for (addr, typ) in addresses.into_iter() {
         let parts = parts.clone();
         let mut aset = BTreeSet::new();
         aset.insert(addr);
-        if let Some((addr, typ)) = query(parts, aset, typ, &pack, &core) {
+        if let Some((addr, typ)) = core.query(parts, aset, typ) {
             for a in addr {
-                if let Some(size) = pack.size_of(typ) {
+                if let Some(size) = core.pack.size_of(typ) {
                     let mut buff = vec![0u8; size as usize];
                     match core.read_into(a, &mut buff) {
                         Ok(()) => {
                             println!(
-                                "    {}::{}", pack.eid_to_name(typ.eid).unwrap(), symbol
+                                "    {}::{}", core.pack.eid_to_name(typ.eid).unwrap(), symbol
                             );
                             hex_dump(a, &buff);
                         }
                         Err(_) => {
                             println!(
                                 "    {}::{} ({:08x}) not present in core dump", 
-                                pack.eid_to_name(typ.eid).unwrap(), 
+                                core.pack.eid_to_name(typ.eid).unwrap(), 
                                 symbol,
                                 a,
                             );

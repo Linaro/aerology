@@ -6,10 +6,10 @@ use std::io::{Cursor, Read};
 
 use goblin::elf::Elf;
 
-use thiserror::Error;
-use miette::Diagnostic;
 
 use zip::read::ZipArchive;
+
+use crate::error::{Error, Result};
 
 pub const AEROLOGY_NOTES_NAME: &str = "aeorology";
 pub const AEROLOGY_TYPE_BASE: u32 = 0xae << 20;
@@ -31,25 +31,6 @@ pub type DebugFrame<'a> = gimli::DebugFrame<
     gimli::EndianSlice<'a, gimli::LittleEndian>
 >;
 
-#[derive(Error, Diagnostic, Debug)]
-pub enum Error {
-    #[error(transparent)]
-    IoError(#[from] std::io::Error),
-    #[error(transparent)]
-    ZipError(#[from] zip::result::ZipError),
-    #[error(transparent)]
-    ObjectError(#[from] object::read::Error),
-    #[error(transparent)]
-    GoblinError(#[from] goblin::error::Error),
-    #[error(transparent)]
-    GimliError(#[from] gimli::Error),
-    #[error("Aerology pack note missing from core dump")]
-    PackNoteMissing,
-    #[error("Bad section name {0}")]
-    BadSectionName(String),
-}
-
-pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Default)]
 pub struct Pack {
