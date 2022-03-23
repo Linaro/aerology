@@ -1,16 +1,16 @@
-use std::convert::TryInto;
 use std::collections::{BTreeMap, BTreeSet};
+use std::convert::TryInto;
+use std::fs::File;
 use std::io::prelude::*;
 use std::io::{BufWriter, Write};
-use std::fs::File;
-use std::path::{PathBuf, Path};
+use std::path::{Path, PathBuf};
 
 use capstone::prelude::*;
 use capstone::InsnGroupType;
 
 use clap::{Parser, Subcommand};
 
-use miette::{Result, IntoDiagnostic, WrapErr};
+use miette::{IntoDiagnostic, Result, WrapErr};
 
 use object::{Object, ObjectSection, ObjectSymbol};
 
@@ -23,20 +23,13 @@ use zip::write::FileOptions;
 mod error;
 
 mod pack;
-use pack::{
-    Pack, 
-    Section, 
-    ProgramHeader,
-    AEROLOGY_NOTES_NAME,
-    AEROLOGY_TYPE_PACK,
-};
+use pack::{Pack, ProgramHeader, Section, AEROLOGY_NOTES_NAME, AEROLOGY_TYPE_PACK};
 
 mod gdb;
 use gdb::Client as GdbClient;
 
 mod core;
-use crate::core::{Core, ExtractedSymbol, SymVal, Regs};
-
+use crate::core::{Core, ExtractedSymbol, Regs, SymVal};
 
 #[derive(Parser, Debug)]
 /// Inspect Zephyr applications
@@ -69,7 +62,7 @@ struct BtArgs {
 }
 
 #[derive(Parser, Debug)]
-struct SegmentsArgs{
+struct SegmentsArgs {
     /// A pack file or core dump to extract info from
     pack_file: PathBuf,
     /// Create a summary based on program headers
@@ -94,8 +87,6 @@ struct DumpArgs {
     /// Dump into this file
     dump_file: Option<PathBuf>,
 }
-
-
 
 #[derive(Subcommand, Debug)]
 enum Command {
@@ -131,13 +122,11 @@ fn pack(args: PackArgs) -> Result<()> {
     let in_canonical = dir.canonicalize().into_diagnostic()?;
     let in_stem = in_canonical.file_stem().unwrap();
     let in_stem_path: &Path = in_stem.as_ref();
-    let out_file = args.out_file.unwrap_or(
-        in_stem_path.with_extension("zap")
-    );
+    let out_file = args.out_file.unwrap_or(in_stem_path.with_extension("zap"));
     let mut out = zip::ZipWriter::new(
         File::create(&out_file)
             .into_diagnostic()
-            .wrap_err("Could not create result pack file")?
+            .wrap_err("Could not create result pack file")?,
     );
     let zephyr_subdir = PathBuf::from("zephyr");
     let tfm_subdir = PathBuf::from("tfm").join("bin");
@@ -148,23 +137,23 @@ fn pack(args: PackArgs) -> Result<()> {
     let zephyr_dts = zephyr_subdir.join("zephyr.dts");
     let required = [zephyr_elf, zephyr_config, zephyr_dts];
     let optional = [tfm_elf, bl2_elf];
-    
+
     let mut buffer = Vec::new();
     for req in required {
         buffer.clear();
         let error_fn = || format!("Failed to include required file, {:?}, in output", req);
         out.start_file(req.to_string_lossy(), options)
-           .into_diagnostic()
-           .wrap_err_with(error_fn)?;
+            .into_diagnostic()
+            .wrap_err_with(error_fn)?;
         let mut f = File::open(dir.join(&req))
-           .into_diagnostic()
-           .wrap_err_with(error_fn)?;
+            .into_diagnostic()
+            .wrap_err_with(error_fn)?;
         f.read_to_end(&mut buffer)
-           .into_diagnostic()
-           .wrap_err_with(error_fn)?;
+            .into_diagnostic()
+            .wrap_err_with(error_fn)?;
         out.write_all(&*buffer)
-           .into_diagnostic()
-           .wrap_err_with(error_fn)?;
+            .into_diagnostic()
+            .wrap_err_with(error_fn)?;
     }
 
     for opt in optional {
@@ -173,21 +162,21 @@ fn pack(args: PackArgs) -> Result<()> {
         let mut f = if let Ok(f) = File::open(dir.join(&opt)) {
             f
         } else {
-            continue
+            continue;
         };
         out.start_file(opt.to_string_lossy(), options)
-           .into_diagnostic()
-           .wrap_err_with(error_fn)?;
+            .into_diagnostic()
+            .wrap_err_with(error_fn)?;
         if f.read_to_end(&mut buffer).is_err() {
             continue;
         }
         out.write_all(&*buffer)
-           .into_diagnostic()
-           .wrap_err_with(error_fn)?;
+            .into_diagnostic()
+            .wrap_err_with(error_fn)?;
     }
-    
+
     println!("packed into {:?}", out_file);
-    
+
     Ok(())
 }
 
@@ -216,44 +205,65 @@ struct Sec {
 fn print_segments(args: SegmentsArgs) -> Result<()> {
     let pack: Pack = args.pack_file.try_into()?;
     let s_addr_mask = pack.s_addr_mask();
-    let sections: Vec<Sec> = if !args.summary { 
-        pack.sections().iter().map(|zsec| {
-            let &Section {
-                eid, ref seg_name, base, size, read, write, executable, zeroed, ..
-            } = zsec;
-            Sec {
-                eid,
-                sec: seg_name.clone(),
-                base: base | s_addr_mask,
-                size,
-                perms: format!(
-                   "{}{}{}{}",
-                    if read { "r" } else { "" },
-                    if write { "w" } else { "" },
-                    if executable { "x" } else { "" },
-                    if zeroed { "z" } else { "" },
-                ),
-            }
-        }).collect()
+    let sections: Vec<Sec> = if !args.summary {
+        pack.sections()
+            .iter()
+            .map(|zsec| {
+                let &Section {
+                    eid,
+                    ref seg_name,
+                    base,
+                    size,
+                    read,
+                    write,
+                    executable,
+                    zeroed,
+                    ..
+                } = zsec;
+                Sec {
+                    eid,
+                    sec: seg_name.clone(),
+                    base: base | s_addr_mask,
+                    size,
+                    perms: format!(
+                        "{}{}{}{}",
+                        if read { "r" } else { "" },
+                        if write { "w" } else { "" },
+                        if executable { "x" } else { "" },
+                        if zeroed { "z" } else { "" },
+                    ),
+                }
+            })
+            .collect()
     } else {
-        pack.program_headers().iter().map(|zph| {
-            let &ProgramHeader {
-                eid, base, size, read, write, executable, zeroed, ..
-            } = zph;
-            Sec {
-                eid,
-                sec:  "".to_string(), 
-                base: base | s_addr_mask, 
-                size, 
-                perms: format!(
-                   "{}{}{}{}",
-                    if read { "r" } else { "" },
-                    if write { "w" } else { "" },
-                    if executable { "x" } else { "" },
-                    if zeroed { "z" } else { "" },
-                ),
-            }
-        }).collect()
+        pack.program_headers()
+            .iter()
+            .map(|zph| {
+                let &ProgramHeader {
+                    eid,
+                    base,
+                    size,
+                    read,
+                    write,
+                    executable,
+                    zeroed,
+                    ..
+                } = zph;
+                Sec {
+                    eid,
+                    sec: "".to_string(),
+                    base: base | s_addr_mask,
+                    size,
+                    perms: format!(
+                        "{}{}{}{}",
+                        if read { "r" } else { "" },
+                        if write { "w" } else { "" },
+                        if executable { "x" } else { "" },
+                        if zeroed { "z" } else { "" },
+                    ),
+                }
+            })
+            .collect()
     };
     let mut section_starts = BTreeMap::new();
     let mut section_ends = BTreeMap::new();
@@ -264,24 +274,38 @@ fn print_segments(args: SegmentsArgs) -> Result<()> {
         sec: String,
         perms: String,
     }
-    for Sec {sec, base, size, eid, perms, ..} in &sections {
+    for Sec {
+        sec,
+        base,
+        size,
+        eid,
+        perms,
+        ..
+    } in &sections
+    {
         let entry_start = section_starts.entry(base + size);
         let entry_start = entry_start.or_insert_with(BTreeMap::new);
-        entry_start.insert(eid, SecState { 
-            sec: sec.clone(), 
-            perms: perms.clone(),
-        });
+        entry_start.insert(
+            eid,
+            SecState {
+                sec: sec.clone(),
+                perms: perms.clone(),
+            },
+        );
         let entry_end = section_ends.entry(*base);
         let entry_end = entry_end.or_insert_with(BTreeMap::new);
-        entry_end.insert(eid, SecState { 
-            sec: sec.clone(), 
-            perms: perms.clone(),
-        });
+        entry_end.insert(
+            eid,
+            SecState {
+                sec: sec.clone(),
+                perms: perms.clone(),
+            },
+        );
         maxaddr = std::cmp::max(maxaddr, base + size);
         minaddr = std::cmp::min(minaddr, *base);
         center_length = std::cmp::max(center_length, pack.eid_to_name(*eid).unwrap().len());
         center_length = std::cmp::max(center_length, sec.len());
-    };
+    }
     let transitions = {
         let mut out = BTreeSet::new();
         let mut starts = section_starts.keys().cloned().collect();
@@ -291,7 +315,7 @@ fn print_segments(args: SegmentsArgs) -> Result<()> {
         out
     };
     let mut columns = BTreeMap::new();
-    for &Sec {eid, ..} in &sections {
+    for &Sec { eid, .. } in &sections {
         columns.insert(eid, 0);
     }
     println!("Note: Not to scale.");
@@ -300,7 +324,11 @@ fn print_segments(args: SegmentsArgs) -> Result<()> {
     let align = center_length + 4;
     print!("        ");
     for &eid in columns.keys() {
-        print!(" {:^align$} ", pack.eid_to_name(eid).unwrap(), align=align);
+        print!(
+            " {:^align$} ",
+            pack.eid_to_name(eid).unwrap(),
+            align = align
+        );
     }
     println!("");
     for addr in transitions.iter().rev() {
@@ -309,39 +337,39 @@ fn print_segments(args: SegmentsArgs) -> Result<()> {
                 print!("{:08x}", addr);
                 for (col, col_started) in columns.iter_mut() {
                     if starts.get(col).is_some() && ends.get(col).is_some() {
-                        print!("├{:─<align$}┤", "", align=align);
+                        print!("├{:─<align$}┤", "", align = align);
                     } else if starts.get(col).is_some() {
-                        print!("┌{:─<align$}┐", "", align=align);
+                        print!("┌{:─<align$}┐", "", align = align);
                         *col_started += 1;
                     } else if ends.get(col).is_some() {
                         *col_started -= 1;
                         if *col_started < 1 {
-                            print!("└{:─<align$}┘", "", align=align);
+                            print!("└{:─<align$}┘", "", align = align);
                         } else {
-                            print!("┡{:━<align$}┩", "", align=align);
+                            print!("┡{:━<align$}┩", "", align = align);
                         }
                     } else {
-                        if *col_started > 0{
-                            print!("│{: <align$}│", "", align=align);
+                        if *col_started > 0 {
+                            print!("│{: <align$}│", "", align = align);
                         } else {
-                            print!(" {: <align$} ", "", align=align);
+                            print!(" {: <align$} ", "", align = align);
                         }
                     }
                 }
                 println!("");
                 print!("        ");
                 for (col, col_started) in columns.iter() {
-                    if let Some(SecState {sec, perms, ..}) = starts.get(col) {
+                    if let Some(SecState { sec, perms, .. }) = starts.get(col) {
                         if *col_started > 1 {
-                            print!("┃{: <align$} {: >3}┃", sec, perms, align=center_length);
+                            print!("┃{: <align$} {: >3}┃", sec, perms, align = center_length);
                         } else {
-                            print!("│{: <align$} {: >3}│", sec, perms, align=center_length);
+                            print!("│{: <align$} {: >3}│", sec, perms, align = center_length);
                         }
                     } else {
                         if *col_started > 0 {
-                            print!("│{: <align$}│", "", align=align);
+                            print!("│{: <align$}│", "", align = align);
                         } else {
-                            print!(" {: <align$} ", "", align=align);
+                            print!(" {: <align$} ", "", align = align);
                         }
                     }
                 }
@@ -352,33 +380,33 @@ fn print_segments(args: SegmentsArgs) -> Result<()> {
                 for (col, col_started) in columns.iter_mut() {
                     if let Some(_) = starts.get(col) {
                         if *col_started > 0 {
-                            print!("┢{:━<align$}┪", "", align=align);
+                            print!("┢{:━<align$}┪", "", align = align);
                         } else {
-                            print!("┌{:─<align$}┐", "", align=align);
+                            print!("┌{:─<align$}┐", "", align = align);
                         }
                         *col_started += 1;
                     } else {
                         if *col_started > 0 {
-                            print!("│{: <align$}│", "", align=align);
+                            print!("│{: <align$}│", "", align = align);
                         } else {
-                            print!(" {: <align$} ", "", align=align);
+                            print!(" {: <align$} ", "", align = align);
                         }
                     }
                 }
                 println!("");
                 print!("        ");
                 for (col, col_started) in columns.iter() {
-                    if let Some(SecState {sec, perms, ..}) = starts.get(col) {
+                    if let Some(SecState { sec, perms, .. }) = starts.get(col) {
                         if *col_started > 1 {
-                            print!("┃{: <align$} {: >3}┃", sec, perms, align=center_length);
+                            print!("┃{: <align$} {: >3}┃", sec, perms, align = center_length);
                         } else {
-                            print!("│{: <align$} {: >3}│", sec, perms, align=center_length);
+                            print!("│{: <align$} {: >3}│", sec, perms, align = center_length);
                         }
                     } else {
                         if *col_started > 0 {
-                            print!("│{: <align$}│", "", align=align);
+                            print!("│{: <align$}│", "", align = align);
                         } else {
-                            print!(" {: <align$} ", "", align=align);
+                            print!(" {: <align$} ", "", align = align);
                         }
                     }
                 }
@@ -390,15 +418,15 @@ fn print_segments(args: SegmentsArgs) -> Result<()> {
                     if let Some(_) = ends.get(col) {
                         *col_started -= 1;
                         if *col_started > 0 {
-                            print!("┡{:━<align$}┩", "", align=align);
+                            print!("┡{:━<align$}┩", "", align = align);
                         } else {
-                            print!("└{:─<align$}┘", "", align=align);
+                            print!("└{:─<align$}┘", "", align = align);
                         }
                     } else {
                         if *col_started > 0 {
-                            print!("│{: <align$}│", "", align=align);
+                            print!("│{: <align$}│", "", align = align);
                         } else {
-                            print!(" {: <align$} ", "", align=align);
+                            print!(" {: <align$} ", "", align = align);
                         }
                     }
                 }
@@ -410,7 +438,6 @@ fn print_segments(args: SegmentsArgs) -> Result<()> {
     Ok(())
 }
 
-
 fn print_disassembly(args: DisArgs) -> Result<()> {
     let pack: Pack = args.pack_file.try_into()?;
     let (executable, symbol) = if let Some((exec, symbol)) = args.symbol.split_once("::") {
@@ -418,7 +445,7 @@ fn print_disassembly(args: DisArgs) -> Result<()> {
     } else {
         (None, args.symbol.as_str())
     };
-    
+
     pack.foreach_elf(|name, object| {
         if executable.is_some() && name.to_str() != executable {
             return Ok(());
@@ -430,8 +457,13 @@ fn print_disassembly(args: DisArgs) -> Result<()> {
                         let addr = sym.address() & !1;
                         let size = sym.size();
                         if let Some(Some(data)) = section.data_range(addr, size).ok() {
-                            let range = addr..addr+size;
-                            println!("assemby of {}::{} at {:08x?}", name.to_string_lossy(), symbol, range);
+                            let range = addr..addr + size;
+                            println!(
+                                "assemby of {}::{} at {:08x?}",
+                                name.to_string_lossy(),
+                                symbol,
+                                range
+                            );
                             let cs = Capstone::new()
                                 .arm()
                                 .mode(arch::arm::ArchMode::Thumb)
@@ -439,23 +471,26 @@ fn print_disassembly(args: DisArgs) -> Result<()> {
                                 .detail(true)
                                 .build()
                                 .unwrap(); // TODO: figure out what to do with this error
-                                // IT does not implement the std::error::Error trait
+                                           // IT does not implement the std::error::Error trait
                             let instrs = cs.disasm_all(data, addr).unwrap();
                             for instr in instrs.as_ref() {
                                 let mut brel = None;
                                 if let Ok(detail) = cs.insn_detail(instr) {
                                     for g in detail.groups() {
-                                        const BREL: u8 = InsnGroupType::CS_GRP_BRANCH_RELATIVE as u8;
+                                        const BREL: u8 =
+                                            InsnGroupType::CS_GRP_BRANCH_RELATIVE as u8;
                                         if let InsnGroupId(BREL) = g {
                                             let arch = detail.arch_detail();
                                             let ops = arch.operands();
-                        
+
                                             let op = ops.last().unwrap_or_else(|| {
                                                 panic!("missing operand!");
                                             });
-                        
+
                                             if let arch::ArchOperand::ArmOperand(op) = op {
-                                                if let arch::arm::ArmOperandType::Imm(a) = op.op_type {
+                                                if let arch::arm::ArmOperandType::Imm(a) =
+                                                    op.op_type
+                                                {
                                                     brel = Some(a as u32);
                                                 }
                                             }
@@ -464,48 +499,50 @@ fn print_disassembly(args: DisArgs) -> Result<()> {
                                 }
                                 let text_symbols: std::collections::BTreeMap<_, _> = object
                                     .symbols()
-                                    .filter_map(|sym| if sym.kind() == object::SymbolKind::Text {
+                                    .filter_map(|sym| {
+                                        if sym.kind() == object::SymbolKind::Text {
                                             Some((sym.address() & !1, sym))
                                         } else {
                                             None
                                         }
-                                    )
+                                    })
                                     .collect();
                                 let dest = if let Some(destaddr) = brel {
                                     let destaddr = destaddr & !1;
-                                    text_symbols.range(..=destaddr as u64).next_back().map(|(_, s)| {
-                                        let offset = destaddr.saturating_sub((s.address() & !1) as u32);
-                                        if offset == 0 {
-                                            format!(
-                                                "{:08x} <{}>", 
-                                                destaddr,
-                                                s.name().unwrap() 
-                                            )
-                                        } else {
-                                            format!(
-                                                "{:08x} <{}+0x{:x}>", 
-                                                destaddr,
-                                                s.name().unwrap(), 
-                                                offset 
-                                            )
-                                        }
-                                    })
+                                    text_symbols.range(..=destaddr as u64).next_back().map(
+                                        |(_, s)| {
+                                            let offset =
+                                                destaddr.saturating_sub((s.address() & !1) as u32);
+                                            if offset == 0 {
+                                                format!("{:08x} <{}>", destaddr, s.name().unwrap())
+                                            } else {
+                                                format!(
+                                                    "{:08x} <{}+0x{:x}>",
+                                                    destaddr,
+                                                    s.name().unwrap(),
+                                                    offset
+                                                )
+                                            }
+                                        },
+                                    )
                                 } else {
                                     None
                                 };
                                 if let Some(destsym) = dest {
-                                    println!("    {:08x}: {:<6} {}", 
-                                        instr.address(), 
-                                        instr.mnemonic().unwrap_or("Unknown"), 
+                                    println!(
+                                        "    {:08x}: {:<6} {}",
+                                        instr.address(),
+                                        instr.mnemonic().unwrap_or("Unknown"),
                                         destsym,
                                     );
                                 } else {
-                                    println!("    {:08x}: {:<6} {}", 
-                                        instr.address(), 
-                                        instr.mnemonic().unwrap_or("Unknown"), 
+                                    println!(
+                                        "    {:08x}: {:<6} {}",
+                                        instr.address(),
+                                        instr.mnemonic().unwrap_or("Unknown"),
                                         instr.op_str().unwrap_or("Unknown")
                                     );
-                                }                                
+                                }
                             }
                         }
                     }
@@ -528,16 +565,29 @@ fn print_symbol_info(args: DisArgs) -> Result<()> {
     for symlookup in pack.lookup_symbol(&symbol) {
         use pack::SymLookup::*;
         match symlookup {
-            | Sym(&pack::Symbol{addr, eid, ref name, size, ..})
-            | Fun(&pack::Function{addr, eid, ref name, size, ..})
-            => {
+            Sym(&pack::Symbol {
+                addr,
+                eid,
+                ref name,
+                size,
+                ..
+            })
+            | Fun(&pack::Function {
+                addr,
+                eid,
+                ref name,
+                size,
+                ..
+            }) => {
                 if executable.is_none() || executable == pack.eid_to_name(eid) {
                     let entry = symbols.entry((name, eid)).or_default();
                     entry.0 = Some(addr);
                     entry.1 = Some(size);
                 }
             }
-            Var(&pack::Variable{ eid, typ, ref name, ..}) => {
+            Var(&pack::Variable {
+                eid, typ, ref name, ..
+            }) => {
                 if executable.is_none() || executable == pack.eid_to_name(eid) {
                     let entry = symbols.entry((name, eid)).or_default();
                     entry.2 = Some(typ);
@@ -554,20 +604,24 @@ fn print_symbol_info(args: DisArgs) -> Result<()> {
             print!("");
         }
         if let Some(typ) = typ {
-            println!(" type {}", pack.type_to_string(typ).as_deref().unwrap_or("unknwon"));
+            println!(
+                " type {}",
+                pack.type_to_string(typ).as_deref().unwrap_or("unknwon")
+            );
             let s = pack.lookup_struct(typ);
             let m = s.as_ref().and_then(|s| pack.struct_members(s));
-            if let Some(pack::Struct{ name, ..}) = s {
-                println!("layout of struct {} {{", name.as_deref().unwrap_or(
-                    "<anonymous>"
-                ));
-            } 
+            if let Some(pack::Struct { name, .. }) = s {
+                println!(
+                    "layout of struct {} {{",
+                    name.as_deref().unwrap_or("<anonymous>")
+                );
+            }
             if let Some(m) = m {
                 for (offset, members) in m.iter() {
-                    for pack::Member{ name, typ, ..} in members {
-                        let type_string = pack.type_to_string(*typ).unwrap_or_else(||
-                            format!("Missing{:x?}", typ)
-                        );
+                    for pack::Member { name, typ, .. } in members {
+                        let type_string = pack
+                            .type_to_string(*typ)
+                            .unwrap_or_else(|| format!("Missing{:x?}", typ));
                         let name_string = name.as_deref().unwrap_or("<anonymous>");
                         println!("{: >6}: {: <20} {}", offset, type_string, name_string);
                     }
@@ -579,7 +633,6 @@ fn print_symbol_info(args: DisArgs) -> Result<()> {
         } else {
             println!("")
         }
-        
     }
     Ok(())
 }
@@ -618,8 +671,8 @@ fn print_extracted_symbol(sym: ExtractedSymbol, pack: &Pack) {
             Array(syms) => {
                 println!("{{");
                 for inner_sym in syms {
-                    indent(depth+1);
-                    inner(inner_sym, pack, depth+1);
+                    indent(depth + 1);
+                    inner(inner_sym, pack, depth + 1);
                     println!(",");
                 }
                 indent(depth);
@@ -632,10 +685,10 @@ fn print_extracted_symbol(sym: ExtractedSymbol, pack: &Pack) {
                     println!("{{");
                 }
                 for (name, inner_sym) in syms {
-                    indent(depth+1);
+                    indent(depth + 1);
                     if let Some(inner_sym) = inner_sym {
                         print!(".{} = ", name);
-                        inner(inner_sym, pack, depth+1);
+                        inner(inner_sym, pack, depth + 1);
                         println!(",");
                     } else {
                         println!("/* .{} is Missing */", name);
@@ -649,9 +702,9 @@ fn print_extracted_symbol(sym: ExtractedSymbol, pack: &Pack) {
     inner(sym, pack, 0);
 }
 
-fn query_symbols(DisArgs{ pack_file, symbol }: DisArgs) -> Result<()> {
+fn query_symbols(DisArgs { pack_file, symbol }: DisArgs) -> Result<()> {
     let core: Core = pack_file.try_into()?;
-    
+
     let (executable, symbol) = if let Some((exec, symbol)) = symbol.split_once("::") {
         (Some(exec), symbol)
     } else {
@@ -660,7 +713,9 @@ fn query_symbols(DisArgs{ pack_file, symbol }: DisArgs) -> Result<()> {
     let mut parts = symbol.split(".");
     // TODO---------------------------v
     let start_symbol = parts.next().unwrap();
-    let addresses = core.get_start_symbols(start_symbol, executable).unwrap_or_default();
+    let addresses = core
+        .get_start_symbols(start_symbol, executable)
+        .unwrap_or_default();
     for (addr, typ) in addresses.into_iter() {
         let parts = parts.clone();
         let mut aset = BTreeSet::new();
@@ -687,53 +742,78 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
     const START_QUERY: &str = "stack_info.start";
     const PSP_QUERY: &str = "callee_saved.psp";
     let core: Core = args.pack_file.try_into()?;
-    let addresses = core.get_start_symbols(START_SYMBOL, EXECUTABLE).unwrap_or_default();
+    let addresses = core
+        .get_start_symbols(START_SYMBOL, EXECUTABLE)
+        .unwrap_or_default();
     macro_rules! or_continue {
-        ($q:expr) => { if let Some(r) = $q { r } else { continue; } }
+        ($q:expr) => {
+            if let Some(r) = $q {
+                r
+            } else {
+                continue;
+            }
+        };
     }
     for (addr, typ) in addresses.into_iter() {
         let mut aset = BTreeSet::new();
         aset.insert(addr);
-        let (thread_addrs, thread_typ) = or_continue!(
-            core.query(THREAD_QUERY.split("."), aset, typ) 
-        );
-        let (thread_name, name_typ) = or_continue!(
-            core.query(NAME_QUERY.split("."), thread_addrs.clone(), thread_typ) 
-        );
-        let (thread_size, size_typ) = or_continue!( 
-            core.query(SIZE_QUERY.split("."), thread_addrs.clone(), thread_typ) 
-        );
-        let (thread_start, start_typ) = or_continue!( 
-            core.query(START_QUERY.split("."), thread_addrs.clone(), thread_typ) 
-        );
-        let (thread_psp, psp_typ) = or_continue!(
-            core.query(PSP_QUERY.split("."), thread_addrs.clone(), thread_typ) 
-        );
+        let (thread_addrs, thread_typ) =
+            or_continue!(core.query(THREAD_QUERY.split("."), aset, typ));
+        let (thread_name, name_typ) =
+            or_continue!(core.query(NAME_QUERY.split("."), thread_addrs.clone(), thread_typ));
+        let (thread_size, size_typ) =
+            or_continue!(core.query(SIZE_QUERY.split("."), thread_addrs.clone(), thread_typ));
+        let (thread_start, start_typ) =
+            or_continue!(core.query(START_QUERY.split("."), thread_addrs.clone(), thread_typ));
+        let (thread_psp, psp_typ) =
+            or_continue!(core.query(PSP_QUERY.split("."), thread_addrs.clone(), thread_typ));
         let mut out = Vec::with_capacity(thread_name.len());
-        for (((&name_addr, &size_addr), &psp_addr), &start_addr) in 
-            thread_name.iter().zip(&thread_size).zip(&thread_psp).zip(&thread_start)
+        for (((&name_addr, &size_addr), &psp_addr), &start_addr) in thread_name
+            .iter()
+            .zip(&thread_size)
+            .zip(&thread_psp)
+            .zip(&thread_start)
         {
-            if let (Some(ExtractedSymbol{typ: _, val: SymVal::CString(name, _)}),
-                    Some(ExtractedSymbol{typ: _, val: SymVal::Unsigned(size)}),
-                    Some(ExtractedSymbol{typ: _, val: SymVal::Unsigned(start)}),
-                    Some(ExtractedSymbol{typ: _, val: SymVal::Unsigned(psp)}))
-                =  (core.symbol_value(name_typ, name_addr),
-                    core.symbol_value(size_typ, size_addr),
-                    core.symbol_value(start_typ, start_addr),
-                    core.symbol_value(psp_typ, psp_addr)) 
-            {
+            if let (
+                Some(ExtractedSymbol {
+                    typ: _,
+                    val: SymVal::CString(name, _),
+                }),
+                Some(ExtractedSymbol {
+                    typ: _,
+                    val: SymVal::Unsigned(size),
+                }),
+                Some(ExtractedSymbol {
+                    typ: _,
+                    val: SymVal::Unsigned(start),
+                }),
+                Some(ExtractedSymbol {
+                    typ: _,
+                    val: SymVal::Unsigned(psp),
+                }),
+            ) = (
+                core.symbol_value(name_typ, name_addr),
+                core.symbol_value(size_typ, size_addr),
+                core.symbol_value(start_typ, start_addr),
+                core.symbol_value(psp_typ, psp_addr),
+            ) {
                 out.push((name, size, start, psp))
             }
         }
         let max_stack_size = or_continue!(out.iter().max_by_key(|(_n, si, _st, _p)| si)).1;
-        let max_name_len = or_continue!(out.iter().max_by_key(|(n, _si, _st, _p)| n.len())).0.len();
+        let max_name_len = or_continue!(out.iter().max_by_key(|(n, _si, _st, _p)| n.len()))
+            .0
+            .len();
         let bar_len = 74 - (3 * 7) - max_name_len;
         let each_bar = (max_stack_size as usize) / bar_len;
         println!("Key: █: currently in use ▒: used in the past ░: never used");
         println!(
             "{: <nl$} {: >6} {: >6} {: >6}",
-            "name", "used", "max", "size",
-            nl=max_name_len,
+            "name",
+            "used",
+            "max",
+            "size",
+            nl = max_name_len,
         );
         println!("Zephyr Threads");
         for (name, size, start, psp) in out {
@@ -751,13 +831,18 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
                     }
                 };
                 let high_water_blocks = high_water_mark / each_bar;
-                let rendered_used = format!("{:█<bu$}", "", bu=blocks_used);
-                let rendered_used = format!("{:▒<hw$}", rendered_used, hw=high_water_blocks);
+                let rendered_used = format!("{:█<bu$}", "", bu = blocks_used);
+                let rendered_used = format!("{:▒<hw$}", rendered_used, hw = high_water_blocks);
                 let this_bar_len = size as usize / each_bar;
                 println!(
                     "{: <nl$} {: >5}b {: >5}b {: >5}b {:░<ss$}",
-                    name, used, high_water_mark, size, rendered_used, 
-                    nl=max_name_len, ss=this_bar_len
+                    name,
+                    used,
+                    high_water_mark,
+                    size,
+                    rendered_used,
+                    nl = max_name_len,
+                    ss = this_bar_len
                 );
             }
         }
@@ -769,7 +854,10 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
     const THREAD_QUERY: &str = "threads.llnodes(next_thread)";
     let core: Core = args.pack_file.try_into()?;
     let mut z_reg_queries = BTreeMap::new();
-    z_reg_queries.insert(Regs::LR as u16, ("arch.mode", Some(Box::new(|m| 0xffffff00u32 | m >> 8))));
+    z_reg_queries.insert(
+        Regs::LR as u16,
+        ("arch.mode", Some(Box::new(|m| 0xffffff00u32 | m >> 8))),
+    );
     z_reg_queries.insert(Regs::PSP as u16, ("callee_saved.psp", None));
     z_reg_queries.insert(Regs::R4 as u16, ("callee_saved.v1", None));
     z_reg_queries.insert(Regs::R5 as u16, ("callee_saved.v2", None));
@@ -779,16 +867,23 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
     z_reg_queries.insert(Regs::R9 as u16, ("callee_saved.v6", None));
     z_reg_queries.insert(Regs::R10 as u16, ("callee_saved.v7", None));
     z_reg_queries.insert(Regs::R11 as u16, ("callee_saved.v8", None));
-    let addresses = core.get_start_symbols("_kernel", Some("zephyr")).unwrap_or_default();
+    let addresses = core
+        .get_start_symbols("_kernel", Some("zephyr"))
+        .unwrap_or_default();
     macro_rules! or_continue {
-        ($q:expr) => { if let Some(r) = $q { r } else { continue; } }
+        ($q:expr) => {
+            if let Some(r) = $q {
+                r
+            } else {
+                continue;
+            }
+        };
     }
     for (addr, typ) in addresses.into_iter() {
         let mut aset = BTreeSet::new();
         aset.insert(addr);
-        let (thread_addrs, thread_typ) = or_continue!(
-            core.query(THREAD_QUERY.split("."), aset, typ) 
-        );
+        let (thread_addrs, thread_typ) =
+            or_continue!(core.query(THREAD_QUERY.split("."), aset, typ));
         for threadaddr in thread_addrs {
             core.do_backtrace(
                 (threadaddr, thread_typ),
@@ -801,20 +896,15 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
     let mut tfm_reg_queries: BTreeMap<_, (_, Option<Box<dyn Fn(u32) -> u32>>)> = BTreeMap::new();
     tfm_reg_queries.insert(Regs::LR as u16, ("ctx_ctrl.exc_ret", None));
     tfm_reg_queries.insert(Regs::PSP as u16, ("ctx_ctrl.sp", None));
-    let addresses = core.get_start_symbols("partition_listhead", Some("tfm_s")).unwrap_or_default();
+    let addresses = core
+        .get_start_symbols("partition_listhead", Some("tfm_s"))
+        .unwrap_or_default();
     for (addr, typ) in addresses.into_iter() {
         let mut aset = BTreeSet::new();
         aset.insert(addr);
-        let (addrs, thread_typ)= or_continue!(
-            core.query("llnodes(next).*".split("."), aset, typ) 
-        );
+        let (addrs, thread_typ) = or_continue!(core.query("llnodes(next).*".split("."), aset, typ));
         for threadaddr in addrs {
-            core.do_backtrace(
-                (threadaddr, thread_typ),
-                &tfm_reg_queries,
-                None,
-                args.regs,
-            );
+            core.do_backtrace((threadaddr, thread_typ), &tfm_reg_queries, None, args.regs);
         }
     }
     Ok(())
@@ -824,7 +914,7 @@ fn hex_dump(address: u32, buff: &[u8]) {
     println!("         0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f");
     let addr_range = (address as usize)..(address as usize + buff.len());
     let base = (address & !0xf) as usize;
-    for base_addr in (base..base+buff.len()).step_by(0x10) {
+    for base_addr in (base..base + buff.len()).step_by(0x10) {
         print!("{:08x}", base_addr);
         for cur_addr in base_addr..base_addr + 0x10 {
             if addr_range.contains(&cur_addr) {
@@ -842,7 +932,6 @@ fn hex_dump(address: u32, buff: &[u8]) {
                 } else {
                     print!(".");
                 }
-
             } else {
                 print!(" ");
             }
@@ -861,7 +950,9 @@ fn hexdump_value(args: DisArgs) -> Result<()> {
     // TODO---------------------------v
     let start_symbol = parts.next().unwrap();
     let core: Core = args.pack_file.try_into()?;
-    let addresses = core.get_start_symbols(start_symbol, executable).unwrap_or_default();
+    let addresses = core
+        .get_start_symbols(start_symbol, executable)
+        .unwrap_or_default();
     for (addr, typ) in addresses.into_iter() {
         let parts = parts.clone();
         let mut aset = BTreeSet::new();
@@ -873,14 +964,16 @@ fn hexdump_value(args: DisArgs) -> Result<()> {
                     match core.read_into(a, &mut buff) {
                         Ok(()) => {
                             println!(
-                                "    {}::{}", core.pack.eid_to_name(typ.eid).unwrap(), symbol
+                                "    {}::{}",
+                                core.pack.eid_to_name(typ.eid).unwrap(),
+                                symbol
                             );
                             hex_dump(a, &buff);
                         }
                         Err(_) => {
                             println!(
-                                "    {}::{} ({:08x}) not present in core dump", 
-                                core.pack.eid_to_name(typ.eid).unwrap(), 
+                                "    {}::{} ({:08x}) not present in core dump",
+                                core.pack.eid_to_name(typ.eid).unwrap(),
                                 symbol,
                                 a,
                             );
@@ -897,9 +990,9 @@ fn pad_num(num: u32, by: u32) -> u32 {
     by - (num % by)
 }
 
-fn padding(num: u32, by: u32) -> &'static [u8]{
+fn padding(num: u32, by: u32) -> &'static [u8] {
     static PAD: [u8; 4] = [0u8; 4];
-    &PAD[.. pad_num(num, by) as usize]
+    &PAD[..pad_num(num, by) as usize]
 }
 
 fn note_size(note: &Note) -> u32 {
@@ -910,13 +1003,12 @@ fn note_size(note: &Note) -> u32 {
         + pad_num(note.n_descsz, 4)
 }
 
-
 fn dump(args: DumpArgs) -> Result<()> {
     let pack: Pack = args.pack_file.clone().try_into()?;
-    let mut client = GdbClient::new(args.gdb_port.unwrap_or(1234))
-        .context("Could not connect to gdb server")?;
+    let mut client =
+        GdbClient::new(args.gdb_port.unwrap_or(1234)).context("Could not connect to gdb server")?;
 
-    let mut pheaders: Vec<_> = pack.program_headers().iter().cloned().collect(); 
+    let mut pheaders: Vec<_> = pack.program_headers().iter().cloned().collect();
     client.halt()?;
     for ph in pheaders.iter_mut() {
         if ph.read && ph.size != 0 {
@@ -929,32 +1021,35 @@ fn dump(args: DumpArgs) -> Result<()> {
                 // from a nonsecure address. For the moment, we'll skip these
                 // sections when this happens.
                 Err(gdb::Error::ErrorCode(code)) if &code == "14" => {
-                    eprintln!("warning: Failed to read a section of {} at {:08x?}({})", 
-                        pack.eid_to_name(ph.eid).unwrap(), 
+                    eprintln!(
+                        "warning: Failed to read a section of {} at {:08x?}({})",
+                        pack.eid_to_name(ph.eid).unwrap(),
                         ph.base..(ph.base + ph.size),
                         ph.size,
                     );
-                    continue
+                    continue;
                 }
-                Err(e) => return Err(miette::Report::new(e).wrap_err(format!(
-                    "Failed to read a section of {} at {:08x?}({})", 
-                    pack.eid_to_name(ph.eid).unwrap(), 
-                    ph.base..(ph.base + ph.size),
-                    ph.size,
-                ))),
- 
+                Err(e) => {
+                    return Err(miette::Report::new(e).wrap_err(format!(
+                        "Failed to read a section of {} at {:08x?}({})",
+                        pack.eid_to_name(ph.eid).unwrap(),
+                        ph.base..(ph.base + ph.size),
+                        ph.size,
+                    )))
+                }
             };
         }
     }
     client.run()?;
     let pack_data = pack.into_inner();
-    let notes = vec![
-        (Note {
+    let notes = vec![(
+        Note {
             n_namesz: (AEROLOGY_NOTES_NAME.len() + 1) as u32,
             n_descsz: pack_data.len() as u32,
             n_type: AEROLOGY_TYPE_PACK,
-        }, pack_data),
-    ];
+        },
+        pack_data,
+    )];
     pheaders.retain(|ph| ph.contents.is_some());
 
     let filename = args.dump_file.unwrap_or_else(|| {
@@ -968,9 +1063,7 @@ fn dump(args: DumpArgs) -> Result<()> {
         }
         filename
     });
-    let mut outfile = BufWriter::new(File::create(&filename)
-        .into_diagnostic()?
-    );
+    let mut outfile = BufWriter::new(File::create(&filename).into_diagnostic()?);
     let ctx = goblin::container::Ctx::new(
         goblin::container::Container::Little,
         goblin::container::Endian::Little,
@@ -980,11 +1073,11 @@ fn dump(args: DumpArgs) -> Result<()> {
     header.e_type = goblin::elf::header::ET_CORE;
     header.e_phoff = header.e_ehsize as u64;
     header.e_phnum = (pheaders.len() + notes.len()) as u16;
-    let mut offset = header.e_phoff as u32+ (header.e_phentsize * header.e_phnum) as u32;
+    let mut offset = header.e_phoff as u32 + (header.e_phentsize * header.e_phnum) as u32;
 
     outfile.iowrite_with(header, ctx).into_diagnostic()?;
-    
-    use goblin::elf32::program_header::{ProgramHeader, PT_LOAD, PF_R, SIZEOF_PHDR, PT_NOTE};
+
+    use goblin::elf32::program_header::{ProgramHeader, PF_R, PT_LOAD, PT_NOTE, SIZEOF_PHDR};
     let mut bytes = vec![0u8; SIZEOF_PHDR];
     for (header, _) in notes.iter() {
         let size = note_size(header);
@@ -995,7 +1088,7 @@ fn dump(args: DumpArgs) -> Result<()> {
             p_filesz: size,
             ..Default::default()
         };
-        
+
         bytes.pwrite_with(phdr, 0, ctx.le).into_diagnostic()?;
         outfile.write_all(&bytes).into_diagnostic()?;
         offset += size;
@@ -1017,21 +1110,29 @@ fn dump(args: DumpArgs) -> Result<()> {
             offset += ph.size;
             offset += pad_num(ph.size, 4);
         }
-    };
+    }
     let mut bytes = [0x0u8; std::mem::size_of::<Note>()];
     for (header, contents) in notes.iter() {
         bytes.pwrite_with(header, 0, ctx.le).into_diagnostic()?;
         outfile.write_all(&bytes).into_diagnostic()?;
-        outfile.write_all(AEROLOGY_NOTES_NAME.as_bytes()).into_diagnostic()?;
+        outfile
+            .write_all(AEROLOGY_NOTES_NAME.as_bytes())
+            .into_diagnostic()?;
         outfile.write_all(&[0x0u8; 1]).into_diagnostic()?;
-        outfile.write_all(padding(header.n_namesz, 4)).into_diagnostic()?;
+        outfile
+            .write_all(padding(header.n_namesz, 4))
+            .into_diagnostic()?;
         outfile.write_all(&contents).into_diagnostic()?;
-        outfile.write_all(padding(header.n_descsz, 4)).into_diagnostic()?;
+        outfile
+            .write_all(padding(header.n_descsz, 4))
+            .into_diagnostic()?;
     }
     for ph in pheaders.iter() {
         if let Some(bytes) = &ph.contents {
             outfile.write_all(&bytes).into_diagnostic()?;
-            outfile.write_all(padding(bytes.len() as u32, 4)).into_diagnostic()?;
+            outfile
+                .write_all(padding(bytes.len() as u32, 4))
+                .into_diagnostic()?;
         }
     }
     println!("Wrote core dump to {:?}", filename);

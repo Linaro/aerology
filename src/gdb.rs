@@ -1,9 +1,9 @@
-use std::net::{TcpStream, SocketAddr, SocketAddrV4, Ipv4Addr};
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::time::Duration;
-use std::io::{Write, Read};
 
-use thiserror::Error;
 use miette::Diagnostic;
+use thiserror::Error;
 
 const GDB_PACKET_START: char = '$';
 const GDB_PACKET_END: char = '#';
@@ -50,12 +50,12 @@ impl Client {
         client.run()?;
         Ok(client)
     }
-    
+
     fn preparecmd(&self, cmd: &str) -> Vec<u8> {
         let mut payload = vec![GDB_PACKET_START as u8];
-        
+
         let mut chksum = 0;
-        
+
         for &b in cmd.as_bytes() {
             payload.push(b);
             chksum += b as u32;
@@ -64,21 +64,21 @@ impl Client {
         payload.extend_from_slice(ending.as_bytes());
         payload
     }
-    
+
     fn sendcmd(&mut self, cmd: &str) -> Result<String> {
         let payload = self.preparecmd(cmd);
         self.stream.write_all(&payload)?;
         self.recieve(true)
     }
-    
+
     fn ack(&mut self) -> Result<()> {
         Ok(self.stream.write_all(&[GDB_PACKET_ACK as u8])?)
     }
-    
+
     fn recieve(&mut self, want_ack: bool) -> Result<String> {
         let mut buff = vec![0; 1024];
         let mut result = String::new();
-        
+
         loop {
             let num = self.stream.read(&mut buff)?;
             result.push_str(std::str::from_utf8(&buff[..num])?);
@@ -88,21 +88,21 @@ impl Client {
             }
         }
         self.ack()?;
-        let start = result.find(GDB_PACKET_START).ok_or_else(||
-            Error::MissingStart(result.clone())
-        )?;
+        let start = result
+            .find(GDB_PACKET_START)
+            .ok_or_else(|| Error::MissingStart(result.clone()))?;
         // If the loop above terminated, there's an end char
         let end = result.find(GDB_PACKET_END).unwrap();
         if end < start {
             Err(Error::EndBeforeStart(result.clone()))?
         }
-        
+
         match result.find(GDB_PACKET_ACK) {
             Some(ack_pos) if want_ack && ack_pos > start => Err(Error::NoAck(result)),
             Some(ack_pos) if !want_ack && ack_pos < start => Err(Error::ExtraAck(result)),
             None if want_ack => Err(Error::NoAck(result)),
             _ => {
-                let result = result[start + 1.. end].to_string();
+                let result = result[start + 1..end].to_string();
                 if result.starts_with("E") {
                     Err(Error::ErrorCode(result[1..].to_string()))
                 } else {
@@ -111,42 +111,48 @@ impl Client {
             }
         }
     }
-    
+
     fn send_only_ack(&mut self, cmd: &str) -> Result<()> {
         let mut buff = vec![0; 1024];
         let to_send = self.preparecmd(cmd);
         self.stream.write_all(&to_send)?;
         let amount = self.stream.read(&mut buff)?;
         if amount != 1 {
-            Err(Error::IncorrectSize(String::from_utf8_lossy(&buff).into_owned()))?
+            Err(Error::IncorrectSize(
+                String::from_utf8_lossy(&buff).into_owned(),
+            ))?
         }
         if buff[0] != GDB_PACKET_ACK as u8 {
             Err(Error::NoAck(String::from_utf8_lossy(&buff).into_owned()))?
         }
         Ok(())
     }
-    
+
     pub fn read(&mut self, addr: u32, data: &mut [u8]) -> Result<()> {
         const MAX_CHUNK_SIZE: u32 = 0x800;
         for (i, chunk) in data.chunks_mut(MAX_CHUNK_SIZE as usize).enumerate() {
-            let cmd = format!("m{:x},{:x}", addr + (i as u32 * MAX_CHUNK_SIZE), chunk.len());
+            let cmd = format!(
+                "m{:x},{:x}",
+                addr + (i as u32 * MAX_CHUNK_SIZE),
+                chunk.len()
+            );
             let ret = self.sendcmd(&cmd)?;
             if ret.len() != chunk.len() * 2 {
                 Err(Error::IncorrectSize(ret.clone()))?
             }
             for i in (0..ret.len()).step_by(2) {
-                chunk[i/2] = u8::from_str_radix(&ret[i..=i+1], 16)?;
+                chunk[i / 2] = u8::from_str_radix(&ret[i..=i + 1], 16)?;
             }
-        }        
+        }
         Ok(())
     }
-    
+
     pub fn halt(&mut self) -> Result<()> {
         self.stream.write_all(&[GDB_PACKET_HALT])?;
         self.recieve(false)?;
         Ok(())
     }
-    
+
     pub fn run(&mut self) -> Result<()> {
         self.send_only_ack("c")
     }
