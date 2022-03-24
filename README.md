@@ -25,6 +25,18 @@ zephyr:
   * visualize stack usage
   * Take backtraces from all threads in zephyr & tfm
   
+# Building
+
+aerology is built with rust and cargo.
+See [rustup.rs](https://rustup.rs) for rust install instructions.
+Once you have rustup, install the native toolchain for your platform
+ and build aerology.
+
+```
+    ;rustup update
+    ;cargo install --path .
+```
+
 # How do I use it?
 
 The current workflow looks something like:
