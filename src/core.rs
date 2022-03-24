@@ -322,11 +322,17 @@ impl Core {
                     .iter()
                     .filter_map(|&a| {
                         self.read_into(a, &mut bytes).ok()?;
-                        Some(u32::from_le_bytes(bytes))
+                        let out = u32::from_le_bytes(bytes);
+                        Some(out)
                     })
                     .collect();
                 let dest_type = ptr.typ?;
                 if member == "*" {
+                    let mut one_byte = [0u8];
+                    let dest_addrs: BTreeSet<u32> = dest_addrs
+                        .into_iter()
+                        .filter(|&a| self.read_into(a, &mut one_byte).is_ok())
+                        .collect();
                     Some((dest_addrs, dest_type))
                 } else if dest_addrs.iter().all(|&da| self.addr_present(da)) {
                     self.step_query(member, &dest_addrs, dest_type)
