@@ -13,6 +13,7 @@ use crate::error::{Error, Result};
 pub const AEROLOGY_NOTES_NAME: &str = "aeorology";
 pub const AEROLOGY_TYPE_BASE: u32 = 0xae << 20;
 pub const AEROLOGY_TYPE_PACK: u32 = AEROLOGY_TYPE_BASE + 1;
+pub const AEROLOGY_TYPE_REGS: u32 = AEROLOGY_TYPE_BASE + 2;
 
 type DebugInfoEntry<'a> =
     gimli::DebuggingInformationEntry<'a, 'a, gimli::EndianSlice<'a, gimli::LittleEndian>, usize>;
@@ -909,6 +910,10 @@ impl Pack {
         let mut frame = DebugFrame::new(section, gimli::LittleEndian);
         frame.set_address_size(4);
         Some(frame)
+    }
+
+    pub fn all_debug_frames<'a>(&'a self) -> Vec<DebugFrame<'a>> {
+        self.eid_to_name.keys().filter_map(|eid| self.debug_frame(*eid)).collect()
     }
 
     pub fn lookup_symbol<'a>(&'a self, name: &'_ str) -> Vec<SymLookup<'a>> {

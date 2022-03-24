@@ -147,6 +147,20 @@ impl Client {
         Ok(())
     }
 
+    pub fn read_regs(&mut self) -> Result<Vec<u32>> {
+        let ret = self.sendcmd("g")?;
+        let mut out = Vec::new();
+        for j in (0..ret.len()).step_by(8) {
+            let mut bytes = [0u8; 4];
+            let chunk = &ret[j..=j+7];
+            for i in (0..chunk.len()).step_by(2) {
+                bytes[i / 2] = u8::from_str_radix(&chunk[i..=i + 1], 16)?;
+            }
+            out.push(u32::from_le_bytes(bytes))
+        }
+        Ok(out)
+    }
+
     pub fn halt(&mut self) -> Result<()> {
         self.stream.write_all(&[GDB_PACKET_HALT])?;
         self.recieve(false)?;

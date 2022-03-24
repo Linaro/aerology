@@ -7,7 +7,7 @@ use gimli::UnwindSection;
 use goblin::elf::Elf;
 
 use crate::error::{Error, Result};
-use crate::pack::{Gid, Pack, Symbol, Variable};
+use crate::pack::{Gid, Pack, Symbol, Variable, AEROLOGY_NOTES_NAME, AEROLOGY_TYPE_REGS};
 
 #[derive(Clone, Debug)]
 struct CoreRegion {
@@ -20,6 +20,7 @@ pub struct Core {
     bytes: Vec<u8>,
     regions: BTreeMap<u32, Vec<CoreRegion>>,
     pub pack: Pack,
+    registers: BTreeMap<u16, u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -41,19 +42,18 @@ pub enum Regs {
     SP,
     LR,
     PC,
-    PSR,
     MSP,
     PSP,
+    PSR = 41,
 }
 
-#[allow(dead_code)]
 fn pretty_print_regs(regs: &BTreeMap<u16, u32>, prefix: &str) {
     use crate::core::Regs::*;
-    for reg in [
+    for (linenum, reg) in [
         R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, SP, LR, PC, PSR,
-    ] {
+    ].into_iter().enumerate() {
         let regnum = reg as u16;
-        if regnum % 4 == 0 {
+        if linenum % 4 == 0 {
             print!("{}", prefix);
         }
         let val = if let Some(&v) = regs.get(&regnum) {
@@ -62,7 +62,7 @@ fn pretty_print_regs(regs: &BTreeMap<u16, u32>, prefix: &str) {
             format!("{:->8}", "")
         };
         print!("{: <3} {} ", format!("{:?}", reg), val);
-        if regnum % 4 == 3 {
+        if linenum % 4 == 3 {
             println!("");
         }
     }
@@ -107,6 +107,22 @@ impl TryFrom<PathBuf> for Core {
                 .or_default()
                 .push(CoreRegion { size, offset });
         }
+        if let Some(notes) = elf.iter_note_headers(&core.bytes) {
+            for note in notes {
+                let note = note?;
+                if note.name != AEROLOGY_NOTES_NAME || note.n_type != AEROLOGY_TYPE_REGS {
+                    continue;
+                }
+                let bytes = note.desc.to_vec();
+                for chunk in bytes.chunks_exact(8) {
+                    let regnum_bytes = &chunk[..4];
+                    let regnum = u32::from_le_bytes(regnum_bytes.try_into().unwrap()) as u16;
+                    let val_bytes = &chunk[4..];
+                    let val = u32::from_le_bytes(val_bytes.try_into().unwrap());
+                    core.registers.insert(regnum, val);
+                }
+            }
+        }
         Ok(core)
     }
 }
@@ -145,6 +161,10 @@ impl Core {
             }
         }
         false
+    }
+
+    pub fn registers(&self) -> BTreeMap<u16, u32> {
+        self.registers.clone()
     }
 
     pub fn symbol_value(&self, typ: Gid, addr: u32) -> Option<ExtractedSymbol> {
@@ -504,7 +524,6 @@ impl Core {
     {
         let (thread_addr, thread_typ) = thread;
         let mut regs = BTreeMap::new();
-        let frame = self.pack.debug_frame(thread_typ.eid)?;
         let mut thread_addrs = BTreeSet::new();
         thread_addrs.insert(thread_addr);
         for (regnum, (q, transformer)) in queries {
@@ -538,49 +557,56 @@ impl Core {
             self.pack.eid_to_name(thread_typ.eid).unwrap(),
             name.unwrap_or_else(|| format!("{:08x}", thread_addr))
         );
+        self.backtrace_regs(regs, print_regs)
+    }
+
+    pub fn backtrace_regs(&self, mut regs: BTreeMap<u16, u32>, print_regs: bool) -> Option<()> {
+        let frames = self.pack.all_debug_frames();
         loop {
             while self.do_exception_return(&mut regs).is_some() {}
             let bases = gimli::BaseAddresses::default();
             let mut ctx = gimli::UnwindContext::new();
             let pc = *regs.get(&(Regs::PC as u16))?;
-            if let Ok(unwind_info) = frame.unwind_info_for_address(
-                &bases,
-                &mut ctx,
-                pc as u64,
-                gimli::DebugFrame::cie_from_offset,
-            ) {
-                use gimli::read::CfaRule::*;
-                let frame_addr = match unwind_info.cfa() {
-                    RegisterAndOffset { register, offset } => {
-                        if let Some(&v) = regs.get(&register.0) {
-                            v as i64 + offset
-                        } else {
-                            break;
-                        }
-                    }
-                    e => {
-                        eprintln!("unhandled cfa rule {:?}", e);
-                        unimplemented!()
-                    }
-                };
-                for &(reg, ref rule) in unwind_info.registers() {
-                    use gimli::read::RegisterRule::*;
-                    match rule {
-                        Undefined | SameValue | Architectural => (),
-                        Offset(o) => {
-                            let mut bytes = [0u8; 4];
-                            let addr = (frame_addr + o) as u32;
-                            self.read_into(addr, &mut bytes).ok()?;
-                            let val = u32::from_le_bytes(bytes);
-                            regs.insert(reg.0, val);
+            for frame in &frames {
+                if let Ok(unwind_info) = frame.unwind_info_for_address(
+                    &bases,
+                    &mut ctx,
+                    pc as u64,
+                    gimli::DebugFrame::cie_from_offset,
+                ) {
+                    use gimli::read::CfaRule::*;
+                    let frame_addr = match unwind_info.cfa() {
+                        RegisterAndOffset { register, offset } => {
+                            if let Some(&v) = regs.get(&register.0) {
+                                v as i64 + offset
+                            } else {
+                                break;
+                            }
                         }
                         e => {
-                            eprintln!("unimplemented reg rule {:?}", e);
+                            eprintln!("unhandled cfa rule {:?}", e);
                             unimplemented!()
                         }
+                    };
+                    for &(reg, ref rule) in unwind_info.registers() {
+                        use gimli::read::RegisterRule::*;
+                        match rule {
+                            Undefined | SameValue | Architectural => (),
+                            Offset(o) => {
+                                let mut bytes = [0u8; 4];
+                                let addr = (frame_addr + o) as u32;
+                                self.read_into(addr, &mut bytes).ok()?;
+                                let val = u32::from_le_bytes(bytes);
+                                regs.insert(reg.0, val);
+                            }
+                            e => {
+                                eprintln!("unimplemented reg rule {:?}", e);
+                                unimplemented!()
+                            }
+                        }
                     }
+                    regs.insert(Regs::SP as u16, frame_addr as u32);
                 }
-                regs.insert(Regs::SP as u16, frame_addr as u32);
             }
             let this_pc = *regs.get(&(Regs::PC as u16))?;
             let next_pc = *regs.get(&(Regs::LR as u16))?;

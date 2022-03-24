@@ -23,7 +23,7 @@ use zip::write::FileOptions;
 mod error;
 
 mod pack;
-use pack::{Pack, ProgramHeader, Section, AEROLOGY_NOTES_NAME, AEROLOGY_TYPE_PACK};
+use pack::{Pack, ProgramHeader, Section, AEROLOGY_NOTES_NAME, AEROLOGY_TYPE_PACK, AEROLOGY_TYPE_REGS};
 
 mod gdb;
 use gdb::Client as GdbClient;
@@ -896,6 +896,9 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
 fn print_backtrace(args: BtArgs) -> Result<()> {
     const THREAD_QUERY: &str = "threads.llnodes(next_thread)";
     let core: Core = args.pack_file.try_into()?;
+    let regs = core.registers();
+    println!("Registers");
+    core.backtrace_regs(regs, args.regs);
     let mut z_reg_queries = BTreeMap::new();
     z_reg_queries.insert(
         Regs::LR as u16,
@@ -1030,7 +1033,7 @@ fn hexdump_value(args: DisArgs) -> Result<()> {
 }
 
 fn pad_num(num: u32, by: u32) -> u32 {
-    by - (num % by)
+    (by - (num % by)) % by
 }
 
 fn padding(num: u32, by: u32) -> &'static [u8] {
@@ -1083,15 +1086,34 @@ fn dump(args: DumpArgs) -> Result<()> {
             };
         }
     }
+    let registers = client.read_regs()?;
     client.run()?;
     let pack_data = pack.into_inner();
+    let ctx = goblin::container::Ctx::new(
+        goblin::container::Container::Little,
+        goblin::container::Endian::Little,
+    );
+    let mut registers_bytes = Vec::new();
+    for (regnum, val) in registers.into_iter().enumerate() {
+        let mut bytes = [0x0u8; 8];
+        bytes.pwrite_with(regnum as u32, 0, ctx.le).into_diagnostic()?;
+        bytes.pwrite_with(val, 4, ctx.le).into_diagnostic()?;
+        registers_bytes.extend_from_slice(&bytes);
+    }
     let notes = vec![(
         Note {
             n_namesz: (AEROLOGY_NOTES_NAME.len() + 1) as u32,
             n_descsz: pack_data.len() as u32,
             n_type: AEROLOGY_TYPE_PACK,
         },
-        pack_data,
+        pack_data
+    ), (
+        Note {
+            n_namesz: (AEROLOGY_NOTES_NAME.len() + 1) as u32,
+            n_descsz: registers_bytes.len() as u32,
+            n_type: AEROLOGY_TYPE_REGS,
+        },
+        registers_bytes,
     )];
     pheaders.retain(|ph| ph.contents.is_some());
 
@@ -1107,10 +1129,6 @@ fn dump(args: DumpArgs) -> Result<()> {
         filename
     });
     let mut outfile = BufWriter::new(File::create(&filename).into_diagnostic()?);
-    let ctx = goblin::container::Ctx::new(
-        goblin::container::Container::Little,
-        goblin::container::Endian::Little,
-    );
     let mut header = goblin::elf::header::Header::new(ctx);
     header.e_machine = goblin::elf::header::EM_ARM;
     header.e_type = goblin::elf::header::ET_CORE;
