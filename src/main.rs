@@ -754,6 +754,7 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
             }
         };
     }
+    let mut out = Vec::new();
     for (addr, typ) in addresses.into_iter() {
         let mut aset = BTreeSet::new();
         aset.insert(addr);
@@ -767,7 +768,6 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
             or_continue!(core.query(START_QUERY.split("."), thread_addrs.clone(), thread_typ));
         let (thread_psp, psp_typ) =
             or_continue!(core.query(PSP_QUERY.split("."), thread_addrs.clone(), thread_typ));
-        let mut out = Vec::with_capacity(thread_name.len());
         for (((&name_addr, &size_addr), &psp_addr), &start_addr) in thread_name
             .iter()
             .zip(&thread_size)
@@ -797,55 +797,98 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
                 core.symbol_value(start_typ, start_addr),
                 core.symbol_value(psp_typ, psp_addr),
             ) {
-                out.push((name, size, start, psp))
+                let name = format!("zephyr::{}", name);
+                out.push((name, size, start, psp, 0xaau8))
             }
         }
-        let max_stack_size = or_continue!(out.iter().max_by_key(|(_n, si, _st, _p)| si)).1;
-        let max_name_len = or_continue!(out.iter().max_by_key(|(n, _si, _st, _p)| n.len()))
-            .0
-            .len();
-        let bar_len = 74 - (3 * 7) - max_name_len;
-        let each_bar = (max_stack_size as usize) / bar_len;
-        println!("Key: █: currently in use ▒: used in the past ░: never used");
+    }
+    let addresses = core
+        .get_start_symbols("partition_listhead", Some("tfm_s"))
+        .unwrap_or_default();
+    for (addr, typ) in addresses.into_iter() {
+        let mut aset = BTreeSet::new();
+        aset.insert(addr);
+        let (thread_addrs, thread_typ) =
+            or_continue!(core.query("llnodes(next).*".split("."), aset, typ));
+        let (thread_size, size_typ) =
+            or_continue!(core.query("p_ldinf.stack_size".split("."), thread_addrs.clone(), thread_typ));
+        let (thread_start, start_typ) =
+            or_continue!(core.query("ctx_ctrl.sp_limit".split("."), thread_addrs.clone(), thread_typ));
+        let (thread_psp, psp_typ) =
+            or_continue!(core.query("ctx_ctrl.sp".split("."), thread_addrs.clone(), thread_typ));
+        for (((addr, &size_addr), &psp_addr), &start_addr) in thread_addrs
+            .iter()
+            .zip(&thread_size)
+            .zip(&thread_psp)
+            .zip(&thread_start)
+        {
+            if let (
+                Some(ExtractedSymbol {
+                    typ: _,
+                    val: SymVal::Unsigned(size),
+                }),
+                Some(ExtractedSymbol {
+                    typ: _,
+                    val: SymVal::Unsigned(start),
+                }),
+                Some(ExtractedSymbol {
+                    typ: _,
+                    val: SymVal::Unsigned(psp),
+                }),
+            ) = (
+                core.symbol_value(size_typ, size_addr),
+                core.symbol_value(start_typ, start_addr),
+                core.symbol_value(psp_typ, psp_addr),
+            ) {
+                let name = format!("tfm_s::{:x}", addr);
+                out.push((name, size, start, psp, 0x00u8))
+            }
+        }
+    }
+    let max_stack_size = out.iter().max_by_key(|(_n, si, _st, _p, _u)| si).unwrap().1;
+    let max_name_len = out.iter().max_by_key(|(n, _si, _st, _p, _u)| n.len())
+        .unwrap()
+        .0
+        .len();
+    let bar_len = 74 - (3 * 7) - max_name_len;
+    let each_bar = (max_stack_size as usize) / bar_len;
+    println!("Key: █: currently in use ▒: used in the past ░: never used");
+    println!(
+        "{: <nl$} {: >6} {: >6} {: >6}",
+        "name",
+        "used",
+        "max",
+        "size",
+        nl = max_name_len,
+    );
+    for (name, size, start, psp, unused_byte) in out {
+        let top = start + size;
+        let used = top.checked_sub(psp).unwrap_or(size);
+        let blocks_used = used as usize / each_bar;
+        let high_water_mark = {
+            let mut bytes = vec![0u8; size as usize];
+            let stack_mem = core.read_into(start as u32, &mut bytes);
+            if stack_mem.is_ok() {
+                let unused = bytes.iter().take_while(|&&b| b == unused_byte).count();
+                size as usize - unused
+            } else {
+                used as usize
+            }
+        };
+        let high_water_blocks = high_water_mark / each_bar;
+        let rendered_used = format!("{:█<bu$}", "", bu = blocks_used);
+        let rendered_used = format!("{:▒<hw$}", rendered_used, hw = high_water_blocks);
+        let this_bar_len = size as usize / each_bar;
         println!(
-            "{: <nl$} {: >6} {: >6} {: >6}",
-            "name",
-            "used",
-            "max",
-            "size",
+            "{: <nl$} {: >5}b {: >5}b {: >5}b {:░<ss$}",
+            name,
+            used,
+            high_water_mark,
+            size,
+            rendered_used,
             nl = max_name_len,
+            ss = this_bar_len
         );
-        println!("Zephyr Threads");
-        for (name, size, start, psp) in out {
-            let top = start + size;
-            if let Some(used) = top.checked_sub(psp) {
-                let blocks_used = used as usize / each_bar;
-                let high_water_mark = {
-                    let mut bytes = vec![0u8; size as usize];
-                    let stack_mem = core.read_into(start as u32, &mut bytes);
-                    if stack_mem.is_ok() {
-                        let unused = bytes.iter().take_while(|&&b| b == 0xaau8).count();
-                        size as usize - unused
-                    } else {
-                        used as usize
-                    }
-                };
-                let high_water_blocks = high_water_mark / each_bar;
-                let rendered_used = format!("{:█<bu$}", "", bu = blocks_used);
-                let rendered_used = format!("{:▒<hw$}", rendered_used, hw = high_water_blocks);
-                let this_bar_len = size as usize / each_bar;
-                println!(
-                    "{: <nl$} {: >5}b {: >5}b {: >5}b {:░<ss$}",
-                    name,
-                    used,
-                    high_water_mark,
-                    size,
-                    rendered_used,
-                    nl = max_name_len,
-                    ss = this_bar_len
-                );
-            }
-        }
     }
     Ok(())
 }

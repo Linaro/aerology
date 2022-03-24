@@ -177,3 +177,21 @@ Key: r = readable, w = writable, x = executable, z = zeroed on startup
                                 │       rwx│
 10000000                        └──────────┘
 ```
+
+Show the stack usage of all threads:
+```
+    ;aerology stacks dhcpv4_client.core.0
+Key: █: currently in use ▒: used in the past ░: never used
+name                 used    max   size
+zephyr::logging       32b    32b   768b ░░░
+zephyr::shell_uart    32b    32b  2048b ░░░░░░░░
+zephyr::idle 00       32b    32b   320b ░
+zephyr::main          88b   216b  1024b ░░░░
+tfm_s::3000bf40      312b  2440b  8192b █▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░░░░░░░░░░░░░
+tfm_s::3000bf88      192b   192b  2688b ░░░░░░░░░░░
+tfm_s::3000bfd0      168b   776b  2048b ▒▒▒░░░░░
+tfm_s::3000c018      176b   644b  1664b ▒▒░░░░░
+tfm_s::3000c060      120b   256b  1280b ▒░░░░
+tfm_s::3000c0a8       72b   300b  1024b ▒░░░
+tfm_s::3000c0f0       72b    20b   256b ░
+```
