@@ -42,6 +42,7 @@ pub struct Pack {
     ptr_types: BTreeMap<Gid, PtrType>,
     array_types: BTreeMap<Gid, ArrayType>,
     subranges: BTreeMap<Gid, SubRange>,
+    const_types: BTreeMap<Gid, Gid>,
     typedefs: BTreeMap<Gid, TypeDef>,
     primitives: BTreeMap<Gid, Primitive>,
     eid_to_name: BTreeMap<usize, String>,
@@ -486,6 +487,30 @@ impl Pack {
         Ok(())
     }
 
+    fn insert_const_type(
+        &mut self,
+        eid: usize,
+        _dwarf: &Dwarf,
+        unit: &Unit,
+        entry: &DebugInfoEntry,
+    ) -> Result<()> {
+        let gid = self.make_gid(eid, unit, entry);
+        let mut attrs = entry.attrs();
+        let mut typ = None;
+        while let Some(attr) = attrs.next()? {
+            match attr.name() {
+                gimli::DW_AT_type => {
+                    typ = self.dwarf_value_to_gid(eid, unit, &attr.value());
+                }
+                _ => {}
+            }
+        }
+        if let Some(typ) = typ {
+            self.const_types.insert(gid, typ);
+        }
+        Ok(())
+    }
+
     fn insert_typedef(
         &mut self,
         eid: usize,
@@ -711,6 +736,7 @@ impl Pack {
                     gimli::DW_TAG_array_type => self.insert_arraytype(eid, &dwarf, &unit, entry)?,
                     gimli::DW_TAG_typedef => self.insert_typedef(eid, &dwarf, &unit, entry)?,
                     gimli::DW_TAG_base_type => self.insert_primitive(eid, &dwarf, &unit, entry)?,
+                    gimli::DW_TAG_const_type => self.insert_const_type(eid, &dwarf, &unit, entry)?,
                     gimli::DW_TAG_subrange_type => {
                         let owner = gid_stack[depth - 1];
                         self.insert_subrange(eid, owner, &dwarf, &unit, entry)?
@@ -942,6 +968,8 @@ impl Pack {
             Some(Typ::Srt(srt))
         } else if let Some(TypeDef { typ, .. }) = self.typedefs.get(&gid) {
             self.lookup_type(*typ)
+        } else if let Some(typ) = self.const_types.get(&gid) {
+            self.lookup_type(*typ)
         } else {
             None
         }
@@ -1001,6 +1029,10 @@ impl Pack {
     pub fn type_to_string(&self, gid: Gid) -> Option<String> {
         if let Some(TypeDef { name, .. }) = self.typedefs.get(&gid) {
             return Some(format!("{}", name));
+        }
+        if let Some(&inner_typ) = self.const_types.get(&gid) {
+            let inner_string = self.type_to_string(inner_typ)?;
+            return Some(format!("const {}", inner_string));
         }
         Some(match self.lookup_type(gid)? {
             Typ::Pri(Primitive { name, .. }) => {
