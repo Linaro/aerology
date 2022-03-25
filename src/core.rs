@@ -440,7 +440,7 @@ impl Core {
 
     pub fn do_exception_return(&self, regs: &mut BTreeMap<u16, u32>) -> Option<()> {
         const EXC_RET_PAYLOAD: u32 = 0xffff_ff00;
-        let payload = regs.get(&(Regs::LR as u16))?;
+        let payload = regs.get(&(Regs::PC as u16))?;
         if payload & EXC_RET_PAYLOAD != EXC_RET_PAYLOAD {
             return None;
         }
@@ -467,14 +467,6 @@ impl Core {
                 Regs::R9,
                 Regs::R10,
                 Regs::R11,
-                Regs::R0,
-                Regs::R1,
-                Regs::R2,
-                Regs::R3,
-                Regs::R12,
-                Regs::LR,
-                Regs::PC,
-                Regs::PSR,
             ] {
                 let mut bytes = [0u8; 4];
                 self.read_into(cur_sp, &mut bytes).ok()?;
@@ -485,31 +477,28 @@ impl Core {
                 // Adjust cur_sp for fp stack frame
                 unimplemented!();
             }
-            regs.insert(Regs::SP as u16, cur_sp);
-            Some(())
-        } else {
-            for regnum in [
-                Regs::R0,
-                Regs::R1,
-                Regs::R2,
-                Regs::R3,
-                Regs::R12,
-                Regs::LR,
-                Regs::PC,
-                Regs::PSR,
-            ] {
-                let mut bytes = [0u8; 4];
-                self.read_into(cur_sp, &mut bytes).ok()?;
-                regs.insert(regnum as u16, u32::from_le_bytes(bytes));
-                cur_sp += 4;
-            }
-            if !is_fp_standard {
-                // Adjust cur_sp for fp stack frame
-                cur_sp += 18 * 4;
-            }
-            regs.insert(Regs::SP as u16, cur_sp);
-            Some(())
         }
+        for regnum in [
+            Regs::R0,
+            Regs::R1,
+            Regs::R2,
+            Regs::R3,
+            Regs::R12,
+            Regs::LR,
+            Regs::PC,
+            Regs::PSR,
+        ] {
+            let mut bytes = [0u8; 4];
+            self.read_into(cur_sp, &mut bytes).ok()?;
+            regs.insert(regnum as u16, u32::from_le_bytes(bytes));
+            cur_sp += 4;
+        }
+        if !is_fp_standard {
+            // Adjust cur_sp for fp stack frame
+            cur_sp += 18 * 4;
+        }
+        regs.insert(Regs::SP as u16, cur_sp);
+        Some(())
     }
 
     pub fn do_backtrace<F>(
@@ -563,7 +552,9 @@ impl Core {
     pub fn backtrace_regs(&self, mut regs: BTreeMap<u16, u32>, print_regs: bool) -> Option<()> {
         let frames = self.pack.all_debug_frames();
         loop {
-            while self.do_exception_return(&mut regs).is_some() {}
+            while self.do_exception_return(&mut regs).is_some() {
+                println!("  ╞═ Exception Handler Called");
+            }
             let bases = gimli::BaseAddresses::default();
             let mut ctx = gimli::UnwindContext::new();
             let pc = *regs.get(&(Regs::PC as u16))?;
@@ -612,8 +603,12 @@ impl Core {
             let next_pc = *regs.get(&(Regs::LR as u16))?;
             let func = self.pack.nearest_elf_symbol(this_pc & !1);
             let func = match func {
-                Some(Symbol { name, .. }) => &name,
-                None => "<unknown>",
+                Some(Symbol { name, eid, .. }) => format!(
+                    "{}::{}",
+                    self.pack.eid_to_name(*eid).unwrap(),
+                    name,
+                ),
+                None => "<unknown>".to_string(),
             };
             let will_exit = pc & !1 == next_pc & !1;
             let prefix = if will_exit { "  └─ " } else { "  ├─ " };

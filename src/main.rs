@@ -901,7 +901,7 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
     core.backtrace_regs(regs, args.regs);
     let mut z_reg_queries = BTreeMap::new();
     z_reg_queries.insert(
-        Regs::LR as u16,
+        Regs::PC as u16,
         ("arch.mode", Some(Box::new(|m| 0xffffff00u32 | m >> 8))),
     );
     z_reg_queries.insert(Regs::PSP as u16, ("callee_saved.psp", None));
@@ -940,7 +940,7 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
         }
     }
     let mut tfm_reg_queries: BTreeMap<_, (_, Option<Box<dyn Fn(u32) -> u32>>)> = BTreeMap::new();
-    tfm_reg_queries.insert(Regs::LR as u16, ("ctx_ctrl.exc_ret", None));
+    tfm_reg_queries.insert(Regs::PC as u16, ("ctx_ctrl.exc_ret", None));
     tfm_reg_queries.insert(Regs::PSP as u16, ("ctx_ctrl.sp", None));
     let addresses = core
         .get_start_symbols("partition_listhead", Some("tfm_s"))
