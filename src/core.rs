@@ -42,9 +42,13 @@ pub enum Regs {
     SP,
     LR,
     PC,
+    PSR,
     MSP,
     PSP,
-    PSR = 41,
+    MSP_NS,
+    PSP_NS,
+    MSP_S,
+    PSP_S,
 }
 
 fn pretty_print_regs(regs: &BTreeMap<u16, u32>, prefix: &str) {
@@ -444,18 +448,19 @@ impl Core {
         if payload & EXC_RET_PAYLOAD != EXC_RET_PAYLOAD {
             return None;
         }
-        let secure_stack = payload & (1 << 6) != 0;
+        let return_to_secure_stack = payload & (1 << 6) != 0;
         let default_stacking = payload & (1 << 5) != 0;
         let is_fp_standard = payload & (1 << 4) != 0;
-        let _from_mode = payload & (1 << 3) != 0;
+        let from_ns_mode = payload & (1 << 3) != 0;
         let sp_sel = payload & (1 << 2) != 0;
         let _secure_exception = payload & (1 << 0) != 0;
-        let mut cur_sp = if sp_sel {
-            *regs.get(&(Regs::PSP as u16))?
-        } else {
-            *regs.get(&(Regs::MSP as u16))?
+        let mut cur_sp = match (sp_sel, return_to_secure_stack) {
+            (true, false) => *regs.get(&(Regs::PSP_NS as u16))?,
+            (true, true) => *regs.get(&(Regs::PSP_S as u16))?,
+            (false, true) => *regs.get(&(Regs::MSP_S as u16))?,
+            (false, false) => *regs.get(&(Regs::MSP_NS as u16))?,
         };
-        if default_stacking && secure_stack {
+        if default_stacking && return_to_secure_stack {
             // skip over the "Integrity signature" and "Reserved" fields
             // cur_sp += 2 * 4;
             for regnum in [

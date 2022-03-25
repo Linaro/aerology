@@ -47,7 +47,10 @@ impl Client {
         let stream = TcpStream::connect_timeout(&addr, timeout)?;
         let mut client = Self { stream };
         client.sendcmd("qSupported")?;
-        client.run()?;
+        // We need to tell qemu that we're a real gdb and we understand how
+        // the g command works
+        client.sendcmd("qXfer:features:read:target.xml:0,1000")?;
+        client.sendcmd("qXfer:features:read:arm-m-profile.xml:0,1000")?;
         Ok(client)
     }
 
@@ -113,7 +116,7 @@ impl Client {
     }
 
     fn send_only_ack(&mut self, cmd: &str) -> Result<()> {
-        let mut buff = vec![0; 1024];
+        let mut buff = vec![0; 1];
         let to_send = self.preparecmd(cmd);
         self.stream.write_all(&to_send)?;
         let amount = self.stream.read(&mut buff)?;

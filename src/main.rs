@@ -904,7 +904,7 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
         Regs::PC as u16,
         ("arch.mode", Some(Box::new(|m| 0xffffff00u32 | m >> 8))),
     );
-    z_reg_queries.insert(Regs::PSP as u16, ("callee_saved.psp", None));
+    z_reg_queries.insert(Regs::PSP_NS as u16, ("callee_saved.psp", None));
     z_reg_queries.insert(Regs::R4 as u16, ("callee_saved.v1", None));
     z_reg_queries.insert(Regs::R5 as u16, ("callee_saved.v2", None));
     z_reg_queries.insert(Regs::R6 as u16, ("callee_saved.v3", None));
@@ -1055,7 +1055,7 @@ fn dump(args: DumpArgs) -> Result<()> {
         GdbClient::new(args.gdb_port.unwrap_or(1234)).context("Could not connect to gdb server")?;
 
     let mut pheaders: Vec<_> = pack.program_headers().iter().cloned().collect();
-    client.halt()?;
+    // client.halt()?;
     for ph in pheaders.iter_mut() {
         if ph.read && ph.size != 0 {
             let mut buff = vec![0; ph.size as usize];
@@ -1087,7 +1087,7 @@ fn dump(args: DumpArgs) -> Result<()> {
         }
     }
     let registers = client.read_regs()?;
-    client.run()?;
+    // client.run()?;
     let pack_data = pack.into_inner();
     let ctx = goblin::container::Ctx::new(
         goblin::container::Container::Little,
