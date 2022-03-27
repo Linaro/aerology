@@ -29,7 +29,7 @@ mod gdb;
 use gdb::Client as GdbClient;
 
 mod core;
-use crate::core::{Core, ExtractedSymbol, Regs, SymVal};
+use crate::core::{Core, ExtractedSymbol, Reg, SymVal};
 
 #[derive(Parser, Debug)]
 /// Inspect Zephyr applications
@@ -893,26 +893,32 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
     Ok(())
 }
 
+fn single_set<T: Ord>(i: T) -> BTreeSet<T> {
+    [i].into_iter().collect()
+}
+
 fn print_backtrace(args: BtArgs) -> Result<()> {
     const THREAD_QUERY: &str = "threads.llnodes(next_thread)";
     let core: Core = args.pack_file.try_into()?;
     let regs = core.registers();
     println!("Registers");
-    core.backtrace_regs(regs, args.regs);
+    let mut bt = core.backtrace(regs);
+    bt.print_regs(args.regs);
+    print!("{}", bt);
     let mut z_reg_queries = BTreeMap::new();
     z_reg_queries.insert(
-        Regs::PC as u16,
+        Reg::Pc,
         ("arch.mode", Some(Box::new(|m| 0xffffff00u32 | m >> 8))),
     );
-    z_reg_queries.insert(Regs::PSP as u16, ("callee_saved.psp", None));
-    z_reg_queries.insert(Regs::R4 as u16, ("callee_saved.v1", None));
-    z_reg_queries.insert(Regs::R5 as u16, ("callee_saved.v2", None));
-    z_reg_queries.insert(Regs::R6 as u16, ("callee_saved.v3", None));
-    z_reg_queries.insert(Regs::R7 as u16, ("callee_saved.v4", None));
-    z_reg_queries.insert(Regs::R8 as u16, ("callee_saved.v5", None));
-    z_reg_queries.insert(Regs::R9 as u16, ("callee_saved.v6", None));
-    z_reg_queries.insert(Regs::R10 as u16, ("callee_saved.v7", None));
-    z_reg_queries.insert(Regs::R11 as u16, ("callee_saved.v8", None));
+    z_reg_queries.insert(Reg::PspNs, ("callee_saved.psp", None));
+    z_reg_queries.insert(Reg::R4, ("callee_saved.v1", None));
+    z_reg_queries.insert(Reg::R5, ("callee_saved.v2", None));
+    z_reg_queries.insert(Reg::R6, ("callee_saved.v3", None));
+    z_reg_queries.insert(Reg::R7, ("callee_saved.v4", None));
+    z_reg_queries.insert(Reg::R8, ("callee_saved.v5", None));
+    z_reg_queries.insert(Reg::R9, ("callee_saved.v6", None));
+    z_reg_queries.insert(Reg::R10, ("callee_saved.v7", None));
+    z_reg_queries.insert(Reg::R11, ("callee_saved.v8", None));
     let addresses = core
         .get_start_symbols("_kernel", Some("zephyr"))
         .unwrap_or_default();
@@ -926,31 +932,62 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
         };
     }
     for (addr, typ) in addresses.into_iter() {
-        let mut aset = BTreeSet::new();
-        aset.insert(addr);
         let (thread_addrs, thread_typ) =
-            or_continue!(core.query(THREAD_QUERY.split("."), aset, typ));
+            or_continue!(core.query(THREAD_QUERY.split("."), single_set(addr), typ));
         for threadaddr in thread_addrs {
-            core.do_backtrace(
-                (threadaddr, thread_typ),
-                &z_reg_queries,
-                Some("name"),
-                args.regs,
-            );
+            if let Some(regs) = core.fill_registers((threadaddr, thread_typ), &z_reg_queries) {
+                let name = match core.query(
+                    "name".split("."),
+                    single_set(threadaddr),
+                    thread_typ,
+                ).and_then(|(n, nt)| core.symbol_value(nt, n.into_iter().nth(0).unwrap())) {
+                    Some(ExtractedSymbol{val: SymVal::CString(s, _), ..}) => s,
+                    _ => format!("{:08x}", threadaddr),
+                };
+                println!(
+                    "Thread {}::{}",
+                    core.pack.eid_to_name(thread_typ.eid).unwrap(),
+                    name,
+                );
+                let mut bt = core.backtrace(regs);
+                bt.print_regs(args.regs);
+                if bt.frames.first().map(|f| f.is_exception_frame()).unwrap_or(false) {
+                    bt.frames.remove(0);
+                }
+                print!("{}", bt);
+            }
         }
     }
     let mut tfm_reg_queries: BTreeMap<_, (_, Option<Box<dyn Fn(u32) -> u32>>)> = BTreeMap::new();
-    tfm_reg_queries.insert(Regs::PC as u16, ("ctx_ctrl.exc_ret", None));
-    tfm_reg_queries.insert(Regs::PSP as u16, ("ctx_ctrl.sp", None));
+    tfm_reg_queries.insert(Reg::Pc, ("ctx_ctrl.exc_ret", None));
+    tfm_reg_queries.insert(Reg::PspS, ("ctx_ctrl.sp", None));
     let addresses = core
         .get_start_symbols("partition_listhead", Some("tfm_s"))
         .unwrap_or_default();
     for (addr, typ) in addresses.into_iter() {
-        let mut aset = BTreeSet::new();
-        aset.insert(addr);
-        let (addrs, thread_typ) = or_continue!(core.query("llnodes(next).*".split("."), aset, typ));
+        let (addrs, thread_typ) = or_continue!(
+            core.query("llnodes(next).*".split("."), single_set(addr), typ));
         for threadaddr in addrs {
-            core.do_backtrace((threadaddr, thread_typ), &tfm_reg_queries, None, args.regs);
+            if let Some(regs) = core.fill_registers((threadaddr, thread_typ), &tfm_reg_queries) {
+                let name = match core.pack.nearest_elf_symbol(threadaddr) {
+                    Some(pack::Symbol{name, ..}) => name
+                        .trim_start_matches("tfm_")
+                        .trim_end_matches("_partition_runtime_item")
+                        .to_string(),
+                    None => format!("{:08x}", threadaddr)
+                };
+                println!(
+                    "Thread {}::{}",
+                    core.pack.eid_to_name(thread_typ.eid).unwrap(),
+                    name,
+                );
+                let mut bt = core.backtrace(regs);
+                bt.print_regs(args.regs);
+                if bt.frames.first().map(|f| f.is_exception_frame()).unwrap_or(false) {
+                    bt.frames.remove(0);
+                }
+                print!("{}", bt);
+            }
         }
     }
     Ok(())
@@ -1055,7 +1092,7 @@ fn dump(args: DumpArgs) -> Result<()> {
         GdbClient::new(args.gdb_port.unwrap_or(1234)).context("Could not connect to gdb server")?;
 
     let mut pheaders: Vec<_> = pack.program_headers().iter().cloned().collect();
-    client.halt()?;
+    // client.halt()?;
     for ph in pheaders.iter_mut() {
         if ph.read && ph.size != 0 {
             let mut buff = vec![0; ph.size as usize];
@@ -1087,7 +1124,7 @@ fn dump(args: DumpArgs) -> Result<()> {
         }
     }
     let registers = client.read_regs()?;
-    client.run()?;
+    // client.run()?;
     let pack_data = pack.into_inner();
     let ctx = goblin::container::Ctx::new(
         goblin::container::Container::Little,

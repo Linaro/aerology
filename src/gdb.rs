@@ -8,6 +8,7 @@ use thiserror::Error;
 const GDB_PACKET_START: char = '$';
 const GDB_PACKET_END: char = '#';
 const GDB_PACKET_ACK: char = '+';
+#[allow(unused)]
 const GDB_PACKET_HALT: u8 = 3;
 
 pub struct Client {
@@ -47,7 +48,10 @@ impl Client {
         let stream = TcpStream::connect_timeout(&addr, timeout)?;
         let mut client = Self { stream };
         client.sendcmd("qSupported")?;
-        client.run()?;
+        // We need to tell qemu that we're a real gdb and we understand how
+        // the g command works
+        client.sendcmd("qXfer:features:read:target.xml:0,1000")?;
+        client.sendcmd("qXfer:features:read:arm-m-profile.xml:0,1000")?;
         Ok(client)
     }
 
@@ -112,8 +116,9 @@ impl Client {
         }
     }
 
+    #[allow(unused)]
     fn send_only_ack(&mut self, cmd: &str) -> Result<()> {
-        let mut buff = vec![0; 1024];
+        let mut buff = vec![0; 1];
         let to_send = self.preparecmd(cmd);
         self.stream.write_all(&to_send)?;
         let amount = self.stream.read(&mut buff)?;
@@ -161,12 +166,14 @@ impl Client {
         Ok(out)
     }
 
+    #[allow(unused)]
     pub fn halt(&mut self) -> Result<()> {
         self.stream.write_all(&[GDB_PACKET_HALT])?;
         self.recieve(false)?;
         Ok(())
     }
 
+    #[allow(unused)]
     pub fn run(&mut self) -> Result<()> {
         self.send_only_ack("c")
     }

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Read;
+use std::ops::Deref;
 use std::path::PathBuf;
 
 use gimli::UnwindSection;
@@ -20,13 +21,85 @@ pub struct Core {
     bytes: Vec<u8>,
     regions: BTreeMap<u32, Vec<CoreRegion>>,
     pub pack: Pack,
-    registers: BTreeMap<u16, u32>,
+    registers: Registers,
 }
 
-#[derive(Debug, Clone, Copy)]
-#[repr(u16)]
-pub enum Regs {
-    R0 = 0,
+/// A snapshot of register state
+#[derive(Debug, Clone)]
+pub struct Registers(BTreeMap<Reg, u32>);
+
+/// A single stack frame
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct StackFrame<'a> {
+    pub regs: Registers,
+    pub in_function: Option<&'a Symbol>,
+}
+
+impl<'a> StackFrame<'a> {
+    pub const PAYLOAD_MASK: u32 = 0xff << 24;
+    pub const EXCRET_PAYLOAD: u32 = 0xff << 24;
+
+    fn is_exc_inner(&self) -> Option<bool> {
+        let cur_pc = self.regs.get(Reg::Pc)?;
+        Some(cur_pc & Self::PAYLOAD_MASK == Self::EXCRET_PAYLOAD)
+    }
+
+    pub fn is_exception_frame(&self) -> bool {
+        self.is_exc_inner().unwrap_or(false)
+    }
+}
+
+impl<T> From<BTreeMap<T, u32>> for Registers
+where
+    T: Into<Reg>,
+{
+    fn from(m: BTreeMap<T, u32>) -> Self {
+        Self(m.into_iter().map(|(k, v)| (k.into(), v)).collect())
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct Backtrace<'a> {
+    pub frames: Vec<StackFrame<'a>>,
+    print_regs: bool,
+}
+
+impl<'a> Backtrace<'a> {
+    pub fn print_regs(&mut self, print_regs: bool) {
+        self.print_regs = print_regs;
+    }
+}
+
+impl<'a> std::fmt::Display for Backtrace<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for i in 0..self.frames.len() {
+            let this_frame = &self.frames[i];
+            if this_frame.is_exception_frame() {
+                writeln!(f, "  ╞═ Exception Handler Called")?;
+                continue;
+            }
+            let is_last = i == self.frames.len() - 1;
+            let func = this_frame
+                .in_function
+                .map(|f| f.name.deref())
+                .unwrap_or("<unknown>");
+            let this_pc = this_frame.regs.get(Reg::Pc).unwrap_or(0);
+            let prefix = if is_last { "  └─ " } else { "  ├─ " };
+            writeln!(f, "{}{:08x} in {}", prefix, this_pc, func)?;
+            if self.print_regs {
+                let prefix = if is_last { "     " } else { "  │  " };
+                this_frame.regs.pretty_print(prefix, f)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Reg {
+    R0,
     R1,
     R2,
     R3,
@@ -39,34 +112,88 @@ pub enum Regs {
     R10,
     R11,
     R12,
-    SP,
-    LR,
-    PC,
-    MSP,
-    PSP,
-    PSR = 41,
+    Sp,
+    Lr,
+    Pc,
+    Psr,
+    Msp,
+    Psp,
+    MspNs,
+    PspNs,
+    MspS,
+    PspS,
+    Other(u16),
 }
 
-fn pretty_print_regs(regs: &BTreeMap<u16, u32>, prefix: &str) {
-    use crate::core::Regs::*;
-    for (linenum, reg) in [
-        R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, SP, LR, PC, PSR,
-    ].into_iter().enumerate() {
-        let regnum = reg as u16;
-        if linenum % 4 == 0 {
-            print!("{}", prefix);
-        }
-        let val = if let Some(&v) = regs.get(&regnum) {
-            format!("{:08x}", v)
-        } else {
-            format!("{:->8}", "")
-        };
-        print!("{: <3} {} ", format!("{:?}", reg), val);
-        if linenum % 4 == 3 {
-            println!("");
+impl From<u16> for Reg {
+    fn from(f: u16) -> Self {
+        match f {
+            0 => Self::R0,
+            1 => Self::R1,
+            2 => Self::R2,
+            3 => Self::R3,
+            4 => Self::R4,
+            5 => Self::R5,
+            6 => Self::R6,
+            7 => Self::R7,
+            8 => Self::R8,
+            9 => Self::R9,
+            10 => Self::R10,
+            11 => Self::R11,
+            12 => Self::R12,
+            13 => Self::Sp,
+            14 => Self::Lr,
+            15 => Self::Pc,
+            16 => Self::Psr,
+            17 => Self::Msp,
+            18 => Self::Psp,
+            19 => Self::MspNs,
+            20 => Self::PspNs,
+            21 => Self::MspS,
+            22 => Self::PspS,
+            e => Self::Other(e),
         }
     }
-    println!("")
+}
+
+impl Registers {
+    fn get(&self, reg: impl Into<Reg>) -> Option<u32> {
+        self.0.get(&reg.into()).cloned()
+    }
+
+    fn set(&mut self, reg: impl Into<Reg>, val: u32) {
+        self.0.insert(reg.into(), val);
+    }
+
+    fn pretty_print(&self, prefix: &str, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::core::Reg::*;
+        for (linenum, reg) in [
+            R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, Sp, Lr, Pc, Psr,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if linenum % 4 == 0 {
+                print!("{}", prefix);
+            }
+            let val = if let Some(v) = self.get(reg) {
+                format!("{:08x}", v)
+            } else {
+                format!("{:->8}", "")
+            };
+            write!(f, "{: <3} {} ", format!("{:?}", reg), val)?;
+            if linenum % 4 == 3 {
+                writeln!(f, "")?;
+            }
+        }
+        writeln!(f, "")
+    }
+}
+
+impl Default for Registers {
+    fn default() -> Self {
+        Self(BTreeMap::new())
+    }
 }
 
 #[derive(Debug)]
@@ -119,7 +246,7 @@ impl TryFrom<PathBuf> for Core {
                     let regnum = u32::from_le_bytes(regnum_bytes.try_into().unwrap()) as u16;
                     let val_bytes = &chunk[4..];
                     let val = u32::from_le_bytes(val_bytes.try_into().unwrap());
-                    core.registers.insert(regnum, val);
+                    core.registers.set(regnum, val);
                 }
             }
         }
@@ -163,7 +290,7 @@ impl Core {
         false
     }
 
-    pub fn registers(&self) -> BTreeMap<u16, u32> {
+    pub fn registers(&self) -> Registers {
         self.registers.clone()
     }
 
@@ -438,39 +565,41 @@ impl Core {
         Some((addr, typ))
     }
 
-    pub fn do_exception_return(&self, regs: &mut BTreeMap<u16, u32>) -> Option<()> {
+    pub fn do_exception_return(&self, regs: &mut Registers) -> Option<Registers> {
         const EXC_RET_PAYLOAD: u32 = 0xffff_ff00;
-        let payload = regs.get(&(Regs::PC as u16))?;
+        let payload = regs.get(Reg::Pc)?;
         if payload & EXC_RET_PAYLOAD != EXC_RET_PAYLOAD {
             return None;
         }
-        let secure_stack = payload & (1 << 6) != 0;
+        let old_regs = regs.clone();
+        let return_to_secure_stack = payload & (1 << 6) != 0;
         let default_stacking = payload & (1 << 5) != 0;
         let is_fp_standard = payload & (1 << 4) != 0;
-        let _from_mode = payload & (1 << 3) != 0;
+        let _from_ns_mode = payload & (1 << 3) != 0;
         let sp_sel = payload & (1 << 2) != 0;
         let _secure_exception = payload & (1 << 0) != 0;
-        let mut cur_sp = if sp_sel {
-            *regs.get(&(Regs::PSP as u16))?
-        } else {
-            *regs.get(&(Regs::MSP as u16))?
+        let mut cur_sp = match (sp_sel, return_to_secure_stack) {
+            (true, false) => regs.get(Reg::PspNs)?,
+            (true, true) => regs.get(Reg::PspS)?,
+            (false, true) => regs.get(Reg::MspS)?,
+            (false, false) => regs.get(Reg::MspNs)?,
         };
-        if default_stacking && secure_stack {
+        if default_stacking && return_to_secure_stack {
             // skip over the "Integrity signature" and "Reserved" fields
             // cur_sp += 2 * 4;
             for regnum in [
-                Regs::R4,
-                Regs::R5,
-                Regs::R6,
-                Regs::R7,
-                Regs::R8,
-                Regs::R9,
-                Regs::R10,
-                Regs::R11,
+                Reg::R4,
+                Reg::R5,
+                Reg::R6,
+                Reg::R7,
+                Reg::R8,
+                Reg::R9,
+                Reg::R10,
+                Reg::R11,
             ] {
                 let mut bytes = [0u8; 4];
                 self.read_into(cur_sp, &mut bytes).ok()?;
-                regs.insert(regnum as u16, u32::from_le_bytes(bytes));
+                regs.set(regnum, u32::from_le_bytes(bytes));
                 cur_sp += 4;
             }
             if !is_fp_standard {
@@ -479,43 +608,41 @@ impl Core {
             }
         }
         for regnum in [
-            Regs::R0,
-            Regs::R1,
-            Regs::R2,
-            Regs::R3,
-            Regs::R12,
-            Regs::LR,
-            Regs::PC,
-            Regs::PSR,
+            Reg::R0,
+            Reg::R1,
+            Reg::R2,
+            Reg::R3,
+            Reg::R12,
+            Reg::Lr,
+            Reg::Pc,
+            Reg::Psr,
         ] {
             let mut bytes = [0u8; 4];
             self.read_into(cur_sp, &mut bytes).ok()?;
-            regs.insert(regnum as u16, u32::from_le_bytes(bytes));
+            regs.set(regnum, u32::from_le_bytes(bytes));
             cur_sp += 4;
         }
         if !is_fp_standard {
             // Adjust cur_sp for fp stack frame
             cur_sp += 18 * 4;
         }
-        regs.insert(Regs::SP as u16, cur_sp);
-        Some(())
+        regs.set(Reg::Sp, cur_sp);
+        Some(old_regs)
     }
 
-    pub fn do_backtrace<F>(
+    pub fn fill_registers<F>(
         &self,
         thread: (u32, Gid),
-        queries: &BTreeMap<u16, (&str, Option<F>)>,
-        name_q: Option<&str>,
-        print_regs: bool,
-    ) -> Option<()>
+        queries: &BTreeMap<Reg, (&str, Option<F>)>,
+    ) -> Option<Registers>
     where
         F: Fn(u32) -> u32,
     {
         let (thread_addr, thread_typ) = thread;
-        let mut regs = BTreeMap::new();
+        let mut regs = Registers::default();
         let mut thread_addrs = BTreeSet::new();
         thread_addrs.insert(thread_addr);
-        for (regnum, (q, transformer)) in queries {
+        for (&reg, (q, transformer)) in queries {
             let (addr, typ) = self.query(q.split("."), thread_addrs.clone(), thread_typ)?;
             let addr = addr.into_iter().next()?;
             let reg_val = self.symbol_value(typ, addr)?;
@@ -525,39 +652,30 @@ impl Core {
                     if let Some(f) = transformer {
                         val = f(val);
                     }
-                    regs.insert(*regnum, val);
+                    regs.set(reg, val);
                 }
                 _ => {}
             }
         }
-        let name = if let Some(nq) = name_q {
-            let (addr, typ) = self.query(nq.split("."), thread_addrs.clone(), thread_typ)?;
-            let addr = addr.into_iter().next()?;
-            let reg_val = self.symbol_value(typ, addr)?;
-            match reg_val.val {
-                SymVal::CString(s, ..) => Some(s),
-                _ => None,
-            }
-        } else {
-            None
-        };
-        println!(
-            "Thread {}::{}",
-            self.pack.eid_to_name(thread_typ.eid).unwrap(),
-            name.unwrap_or_else(|| format!("{:08x}", thread_addr))
-        );
-        self.backtrace_regs(regs, print_regs)
+        Some(regs)
     }
 
-    pub fn backtrace_regs(&self, mut regs: BTreeMap<u16, u32>, print_regs: bool) -> Option<()> {
+    fn backtrace_inner<'a>(
+        &'a self,
+        mut regs: Registers,
+        out: &mut Vec<StackFrame<'a>>,
+    ) -> Option<()> {
         let frames = self.pack.all_debug_frames();
         loop {
-            while self.do_exception_return(&mut regs).is_some() {
-                println!("  ╞═ Exception Handler Called");
+            while let Some(regs) = self.do_exception_return(&mut regs) {
+                out.push(StackFrame {
+                    regs,
+                    in_function: None,
+                });
             }
             let bases = gimli::BaseAddresses::default();
             let mut ctx = gimli::UnwindContext::new();
-            let pc = *regs.get(&(Regs::PC as u16))?;
+            let pc = regs.get(Reg::Pc)?;
             for frame in &frames {
                 if let Ok(unwind_info) = frame.unwind_info_for_address(
                     &bases,
@@ -568,7 +686,7 @@ impl Core {
                     use gimli::read::CfaRule::*;
                     let frame_addr = match unwind_info.cfa() {
                         RegisterAndOffset { register, offset } => {
-                            if let Some(&v) = regs.get(&register.0) {
+                            if let Some(v) = regs.get(register.0) {
                                 v as i64 + offset
                             } else {
                                 break;
@@ -588,7 +706,7 @@ impl Core {
                                 let addr = (frame_addr + o) as u32;
                                 self.read_into(addr, &mut bytes).ok()?;
                                 let val = u32::from_le_bytes(bytes);
-                                regs.insert(reg.0, val);
+                                regs.set(reg.0, val);
                             }
                             e => {
                                 eprintln!("unimplemented reg rule {:?}", e);
@@ -596,32 +714,31 @@ impl Core {
                             }
                         }
                     }
-                    regs.insert(Regs::SP as u16, frame_addr as u32);
+                    regs.set(Reg::Sp, frame_addr as u32);
                 }
             }
-            let this_pc = *regs.get(&(Regs::PC as u16))?;
-            let next_pc = *regs.get(&(Regs::LR as u16))?;
+            let this_pc = regs.get(Reg::Pc)?;
+            let next_pc = regs.get(Reg::Lr)?;
             let func = self.pack.nearest_elf_symbol(this_pc & !1);
-            let func = match func {
-                Some(Symbol { name, eid, .. }) => format!(
-                    "{}::{}",
-                    self.pack.eid_to_name(*eid).unwrap(),
-                    name,
-                ),
-                None => "<unknown>".to_string(),
-            };
             let will_exit = pc & !1 == next_pc & !1;
-            let prefix = if will_exit { "  └─ " } else { "  ├─ " };
-            println!("{}{:08x} in {}", prefix, this_pc, func);
-            if print_regs {
-                let prefix = if will_exit { "     " } else { "  │  " };
-                pretty_print_regs(&regs, prefix);
-            }
+            out.push(StackFrame {
+                regs: regs.clone(),
+                in_function: func,
+            });
             if will_exit {
                 break;
             }
-            regs.insert(Regs::PC as u16, next_pc);
+            regs.set(Reg::Pc, next_pc);
         }
         Some(())
+    }
+
+    pub fn backtrace<'a>(&'a self, regs: Registers) -> Backtrace<'a> {
+        let mut frames = Vec::new();
+        self.backtrace_inner(regs, &mut frames);
+        Backtrace {
+            frames,
+            print_regs: false,
+        }
     }
 }
