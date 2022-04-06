@@ -11,7 +11,9 @@ capstone = "0.10"
 thiserror = "*"
 scroll = "0.11"
 gimli = "0.26"
-humansize = "1.1"
+pest = "2.1.3"
+pest_derive = "2.1.0"
+maplit = "1.0"
 
 [dependencies.clap]
 version = "3.1"

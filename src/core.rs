@@ -3,12 +3,16 @@ use std::fs::File;
 use std::io::Read;
 use std::ops::Deref;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use gimli::UnwindSection;
 use goblin::elf::Elf;
 
+use miette::SourceSpan;
+
 use crate::error::{Error, Result};
-use crate::pack::{Gid, Pack, Symbol, Variable, AEROLOGY_NOTES_NAME, AEROLOGY_TYPE_REGS};
+use crate::pack::{self, Gid, Pack, Symbol, Variable, AEROLOGY_NOTES_NAME, AEROLOGY_TYPE_REGS};
+use crate::query;
 
 #[derive(Clone, Debug)]
 struct CoreRegion {
@@ -156,6 +160,38 @@ impl From<u16> for Reg {
     }
 }
 
+impl FromStr for Reg {
+    type Err = ();
+    fn from_str(f: &str) -> std::result::Result<Self, ()> {
+        match f {
+            "r0" => Ok(Self::R0),
+            "r1" => Ok(Self::R1),
+            "r2" => Ok(Self::R2),
+            "r3" => Ok(Self::R3),
+            "r4" => Ok(Self::R4),
+            "r5" => Ok(Self::R5),
+            "r6" => Ok(Self::R6),
+            "r7" => Ok(Self::R7),
+            "r8" => Ok(Self::R8),
+            "r9" => Ok(Self::R9),
+            "r10" => Ok(Self::R10),
+            "r11" => Ok(Self::R11),
+            "r12" | "ip" => Ok(Self::R12),
+            "r13" | "sp" => Ok(Self::Sp),
+            "r14" | "lr" => Ok(Self::Lr),
+            "r15" | "pc" => Ok(Self::Pc),
+            "xpsr" | "psr" => Ok(Self::Psr),
+            "msp" => Ok(Self::Msp),
+            "psp" => Ok(Self::Psp),
+            "msp_ns" => Ok(Self::MspNs),
+            "psp_ns" => Ok(Self::PspNs),
+            "msp_s" => Ok(Self::MspS),
+            "psp_s" => Ok(Self::PspS),
+            _ => Err(()),
+        }
+    }
+}
+
 impl Registers {
     fn get(&self, reg: impl Into<Reg>) -> Option<u32> {
         self.0.get(&reg.into()).cloned()
@@ -196,6 +232,34 @@ impl Default for Registers {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Addresses {
+    pub typ: Gid,
+    pub addrs: BTreeMap<u32, u32>,
+}
+#[derive(Debug, Clone)]
+pub enum QuerySuccess<'a> {
+    Addresses(Addresses),
+    Backtraces(BTreeMap<u32, Backtrace<'a>>),
+}
+
+impl<'a> QuerySuccess<'a> {
+    fn from_pair(addr: u32, typ: Gid) -> Self {
+        let addrs = maplit::btreemap! {
+            addr => addr
+        };
+        Self::Addresses(Addresses { addrs, typ })
+    }
+
+    fn as_mut_addrs<'b>(&'b mut self) -> Option<&'b mut Addresses> {
+        if let Self::Addresses(addrs) = self {
+            Some(addrs)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum SymVal {
     CString(String, usize),
@@ -204,6 +268,19 @@ pub enum SymVal {
     Float(f64),
     Array(Vec<ExtractedSymbol>),
     Struct(Vec<(String, Option<ExtractedSymbol>)>),
+}
+
+impl SymVal {
+    fn type_name(&self) -> &'static str {
+        match self {
+            Self::CString(..) => "string",
+            Self::Unsigned(..) => "unsigned integer",
+            Self::Signed(..) => "signed integer",
+            Self::Float(..) => "floating point number",
+            Self::Array(..) => "array",
+            Self::Struct(..) => "struct",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -394,7 +471,244 @@ impl Core {
         }
     }
 
-    pub fn get_start_symbols<'a>(
+    pub fn global_addr(&self, global: query::Global) -> Vec<(u32, Gid)> {
+        let elf = global.elf.as_ref().map(|s| s.name.as_str());
+        self.get_start_symbols(&global.sym.name, elf)
+            .unwrap_or_default()
+    }
+
+    pub fn filter<'a>(
+        &'a self,
+        filter: &[query::Filter],
+        addr: u32,
+        typ: Gid,
+    ) -> Result<QuerySuccess<'a>> {
+        let mut intermediate = QuerySuccess::from_pair(addr, typ);
+        for f in filter {
+            macro_rules! get_inner {
+                ($i:ident, $f:ident) => {
+                    $i.as_mut_addrs().ok_or_else(|| Error::TypeMismatch {
+                        span: $f.span(),
+                        expected: "pointer, array, struct, union or primitive".to_string(),
+                        found: "backtrace".to_string(),
+                    })
+                };
+            }
+            match f {
+                query::Filter::Expr(postfix) => {
+                    let inner = get_inner!(intermediate, f)?;
+                    self.step_by_postfix(postfix, inner)?
+                }
+                query::Filter::Backtrace(span, regs) => {
+                    self.step_backtrace(span, regs, &mut intermediate)?
+                }
+                query::Filter::LLNodes(member) => {
+                    let inner = get_inner!(intermediate, f)?;
+                    self.linked_list_nodes(member, inner)?
+                }
+            }
+        }
+        Ok(intermediate)
+    }
+
+    fn step_backtrace<'a>(
+        &'a self,
+        span: &SourceSpan,
+        regs: &Vec<query::RegAssignment>,
+        intermediate: &mut QuerySuccess<'a>,
+    ) -> Result<()> {
+        let inter = intermediate
+            .as_mut_addrs()
+            .ok_or_else(|| Error::TypeMismatch {
+                span: span.clone(),
+                expected: "pointer, array, struct, union or primitive".to_string(),
+                found: "backtrace".to_string(),
+            })?;
+        let mut registers: BTreeMap<_, Registers> = BTreeMap::new();
+        for query::RegAssignment { reg, val } in regs {
+            let reg: Reg = reg
+                .name
+                .parse()
+                .map_err(|_| Error::UnknownReg(reg.span.clone()))?;
+            let mut reg_inter = inter.clone();
+            self.step_by_postfix(val, &mut reg_inter)?;
+            for (start, addr) in reg_inter.addrs {
+                let extracted = if let Some(e) = self.symbol_value(reg_inter.typ, addr) {
+                    e
+                } else {
+                    continue;
+                };
+                let value = if let SymVal::Unsigned(num) = extracted.val {
+                    num as u32
+                } else if let SymVal::Signed(num) = extracted.val {
+                    num as u32
+                } else {
+                    return Err(Error::TypeMismatch {
+                        span: val.span.clone(),
+                        expected: "signed or unsigned integer".to_string(),
+                        found: extracted.val.type_name().to_string(),
+                    });
+                };
+                registers.entry(start).or_default().set(reg, value);
+            }
+        }
+        let backtraces = registers
+            .into_iter()
+            .map(|(k, regs)| (k, self.backtrace(regs)))
+            .collect();
+        *intermediate = QuerySuccess::Backtraces(backtraces);
+        Ok(())
+    }
+
+    fn linked_list_nodes(&self, pf: &query::Postfix, intermediate: &mut Addresses) -> Result<()> {
+        self.step_by_postfix(pf, intermediate)?;
+        let heads = intermediate.clone();
+        let mut all_nodes = heads.clone();
+        loop {
+            let step = self.step_by_postfix(pf, intermediate);
+            if let Err(Error::InvalidAddress(_)) = step {
+                break;
+            }
+            let _ = step?;
+            if intermediate.addrs == heads.addrs || intermediate.addrs.is_empty() {
+                break;
+            } else {
+                all_nodes
+                    .addrs
+                    .extend(intermediate.addrs.values().map(|&v| (v, v)));
+            }
+        }
+        // TODO: empty?
+        intermediate.addrs = all_nodes.addrs;
+        Ok(())
+    }
+
+    fn step_by_deref(
+        &self,
+        ptr: &pack::PtrType,
+        intermediate: &mut Addresses,
+        span: SourceSpan,
+    ) -> Result<()> {
+        assert!(ptr.size == 4);
+        let mut bytes = [0u8; 4];
+        let dest_type = ptr.typ.ok_or_else(|| Error::UnsizedType(span))?;
+        intermediate.addrs = intermediate
+            .addrs
+            .iter()
+            .filter_map(|(&k, &a)| {
+                self.read_into(a, &mut bytes).ok()?;
+                let out = u32::from_le_bytes(bytes);
+                Some((k, out))
+            })
+            .collect();
+        intermediate.typ = dest_type;
+        Ok(())
+    }
+
+    fn step_by_postfix(&self, postfix: &query::Postfix, inter: &mut Addresses) -> Result<()> {
+        for suffix in &postfix.suffixes {
+            self.step_by_suffix(suffix, inter)?;
+        }
+        Ok(())
+    }
+
+    fn step_by_suffix(&self, member: &query::Suffix, intermediate: &mut Addresses) -> Result<()> {
+        let typ = self
+            .pack
+            .lookup_type(intermediate.typ)
+            .ok_or_else(|| Error::TypeMissing(member.span()))?;
+        match (member, typ) {
+            (
+                query::Suffix::Member(query::Symbol { span, .. }) | query::Suffix::Index(_, span),
+                pack::Typ::Ptr(ptr),
+            ) => {
+                self.step_by_deref(ptr, intermediate, span.clone())?;
+                self.step_by_suffix(member, intermediate)
+            }
+            (query::Suffix::Deref(span), pack::Typ::Ptr(ptr)) => {
+                self.step_by_deref(ptr, intermediate, span.clone())
+            }
+            (query::Suffix::Member(sym), pack::Typ::Srt(srt)) => {
+                let (offset, typ) = self.pack.offset_of(&sym.name, &srt.gid).ok_or_else(|| {
+                    Error::MemberMissing(
+                        sym.span.clone(),
+                        sym.name.clone(),
+                        format!("{:?}", self.pack.struct_member_names(&srt)),
+                    )
+                })?;
+                for (_, addr) in &mut intermediate.addrs {
+                    *addr = addr.wrapping_add(offset as u32);
+                }
+                intermediate.typ = typ;
+                Ok(())
+            }
+            (query::Suffix::Index(None, span), pack::Typ::Arr(arr)) => {
+                let arr_len = self
+                    .pack
+                    .array_len(arr)
+                    .ok_or(Error::UnsizedArray(span.clone()))? as u32;
+                let stride = self
+                    .pack
+                    .size_of(arr.typ)
+                    .ok_or(Error::UnsizedType(span.clone()))? as u32;
+                let dest_addrs = intermediate
+                    .addrs
+                    .values()
+                    .map(|&a| (0..arr_len).filter_map(move |ia| a.checked_add(ia * stride)))
+                    .flatten()
+                    .map(|a| (a, a))
+                    .collect();
+                intermediate.addrs = dest_addrs;
+                intermediate.typ = arr.typ;
+                Ok(())
+            }
+            (&query::Suffix::Index(Some(by), ref span), pack::Typ::Arr(arr)) => {
+                let arr_len = self
+                    .pack
+                    .array_len(arr)
+                    .ok_or(Error::UnsizedArray(span.clone()))? as u32;
+                let stride = self
+                    .pack
+                    .size_of(arr.typ)
+                    .ok_or(Error::UnsizedType(span.clone()))? as u32;
+                if by >= arr_len {
+                    return Err(Error::IndexOOB(span.clone(), arr_len));
+                }
+                let offset = by * stride;
+                for (_, addr) in &mut intermediate.addrs {
+                    *addr = addr.wrapping_add(offset);
+                }
+                intermediate.typ = arr.typ;
+                Ok(())
+            }
+            (query::Suffix::Index(..), _) => Err(Error::TypeMismatch {
+                span: member.span(),
+                found: self
+                    .pack
+                    .type_to_string(intermediate.typ)
+                    .unwrap_or_else(|| "<unknown>".to_string()),
+                expected: "array".to_string(),
+            }),
+            (query::Suffix::Deref(..), _) => Err(Error::TypeMismatch {
+                span: member.span(),
+                found: self
+                    .pack
+                    .type_to_string(intermediate.typ)
+                    .unwrap_or_else(|| "<unknown>".to_string()),
+                expected: "pointer".to_string(),
+            }),
+            (query::Suffix::Member(..), _) => Err(Error::TypeMismatch {
+                span: member.span(),
+                found: self
+                    .pack
+                    .type_to_string(intermediate.typ)
+                    .unwrap_or_else(|| "<unknown>".to_string()),
+                expected: "struct or union".to_string(),
+            }),
+        }
+    }
+
+    pub fn get_start_symbols(
         &self,
         start_symbol: &str,
         executable: Option<&str>,

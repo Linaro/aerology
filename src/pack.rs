@@ -737,7 +737,9 @@ impl Pack {
                     gimli::DW_TAG_array_type => self.insert_arraytype(eid, &dwarf, &unit, entry)?,
                     gimli::DW_TAG_typedef => self.insert_typedef(eid, &dwarf, &unit, entry)?,
                     gimli::DW_TAG_base_type => self.insert_primitive(eid, &dwarf, &unit, entry)?,
-                    gimli::DW_TAG_const_type => self.insert_const_type(eid, &dwarf, &unit, entry)?,
+                    gimli::DW_TAG_const_type => {
+                        self.insert_const_type(eid, &dwarf, &unit, entry)?
+                    }
                     gimli::DW_TAG_subrange_type => {
                         let owner = gid_stack[depth - 1];
                         self.insert_subrange(eid, owner, &dwarf, &unit, entry)?
@@ -913,7 +915,10 @@ impl Pack {
     }
 
     pub fn all_debug_frames<'a>(&'a self) -> Vec<DebugFrame<'a>> {
-        self.eid_to_name.keys().filter_map(|eid| self.debug_frame(*eid)).collect()
+        self.eid_to_name
+            .keys()
+            .filter_map(|eid| self.debug_frame(*eid))
+            .collect()
     }
 
     pub fn lookup_symbol<'a>(&'a self, name: &'_ str) -> Vec<SymLookup<'a>> {
@@ -960,6 +965,15 @@ impl Pack {
             }
         }
         Some(total_members)
+    }
+
+    pub fn struct_member_names(&self, s: &Struct) -> Vec<String> {
+        let members = self.struct_members(s).unwrap_or_default();
+        members
+            .into_values()
+            .flatten()
+            .filter_map(|m| m.name)
+            .collect()
     }
 
     pub fn lookup_type<'a>(&'a self, gid: Gid) -> Option<Typ<'a>> {

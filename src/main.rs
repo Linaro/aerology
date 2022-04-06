@@ -15,6 +15,7 @@ use miette::{IntoDiagnostic, Result, WrapErr};
 use object::{Object, ObjectSection, ObjectSymbol};
 
 use goblin::elf32::Note;
+use maplit;
 
 use scroll::{IOwrite, Pwrite};
 
@@ -23,13 +24,18 @@ use zip::write::FileOptions;
 mod error;
 
 mod pack;
-use pack::{Pack, ProgramHeader, Section, AEROLOGY_NOTES_NAME, AEROLOGY_TYPE_PACK, AEROLOGY_TYPE_REGS};
+use pack::{
+    Pack, ProgramHeader, Section, AEROLOGY_NOTES_NAME, AEROLOGY_TYPE_PACK, AEROLOGY_TYPE_REGS,
+};
 
 mod gdb;
 use gdb::Client as GdbClient;
 
 mod core;
-use crate::core::{Core, ExtractedSymbol, Reg, SymVal};
+use crate::core::{Addresses, Core, ExtractedSymbol, QuerySuccess, Reg, SymVal};
+
+mod query;
+use query::Query;
 
 #[derive(Parser, Debug)]
 /// Inspect Zephyr applications
@@ -59,6 +65,20 @@ struct BtArgs {
     /// Include registers in the backtraces
     #[clap(short, long)]
     regs: bool,
+}
+
+#[derive(Parser, Debug)]
+struct QueryArgs {
+    /// A core dump to extract info from
+    pack_file: PathBuf,
+    /// The query inself
+    query: String,
+    /// hex-dump the value instead of pretty-printing it
+    #[clap(long)]
+    hex_dump: bool,
+    /// print type & offset information of the value instead of pretty-printing it
+    #[clap(short, long)]
+    structure: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -104,12 +124,8 @@ enum Command {
     Backtrace(BtArgs),
     /// Disassemble functions from all packaged binaries
     Disassemble(DisArgs),
-    /// Print the address and type, if available, of matching symbols
-    SymbolInfo(DisArgs),
-    /// Print the a value of the matching symbols
-    SymbolValue(DisArgs),
-    /// Dump the symbols as hex
-    HexdumpValue(DisArgs),
+    /// Print the a value, structure or hex-dump of the matching symbols
+    Query(QueryArgs),
     /// Create a core dump through a gdb remote interface
     Dump(DumpArgs),
 }
@@ -554,89 +570,6 @@ fn print_disassembly(args: DisArgs) -> Result<()> {
     Ok(())
 }
 
-fn print_symbol_info(args: DisArgs) -> Result<()> {
-    let pack: Pack = args.pack_file.try_into()?;
-    let (executable, symbol) = if let Some((exec, symbol)) = args.symbol.split_once("::") {
-        (Some(exec), symbol)
-    } else {
-        (None, args.symbol.as_str())
-    };
-    let mut symbols: BTreeMap<_, (Option<u32>, Option<u32>, Option<pack::Gid>)> = BTreeMap::new();
-    for symlookup in pack.lookup_symbol(&symbol) {
-        use pack::SymLookup::*;
-        match symlookup {
-            Sym(&pack::Symbol {
-                addr,
-                eid,
-                ref name,
-                size,
-                ..
-            })
-            | Fun(&pack::Function {
-                addr,
-                eid,
-                ref name,
-                size,
-                ..
-            }) => {
-                if executable.is_none() || executable == pack.eid_to_name(eid) {
-                    let entry = symbols.entry((name, eid)).or_default();
-                    entry.0 = Some(addr);
-                    entry.1 = Some(size);
-                }
-            }
-            Var(&pack::Variable {
-                eid, typ, ref name, ..
-            }) => {
-                if executable.is_none() || executable == pack.eid_to_name(eid) {
-                    let entry = symbols.entry((name, eid)).or_default();
-                    entry.2 = Some(typ);
-                }
-            }
-        }
-    }
-    for ((name, eid), (addr, size, typ)) in symbols.into_iter() {
-        let elf = pack.eid_to_name(eid).unwrap();
-        print!("{}::{}", elf, name);
-        if let (Some(addr), Some(size)) = (addr, size) {
-            print!("@{:08x}, {}b", addr, size);
-        } else {
-            print!("");
-        }
-        if let Some(typ) = typ {
-            println!(
-                " type {}",
-                pack.type_to_string(typ).as_deref().unwrap_or("unknwon")
-            );
-            let s = pack.lookup_struct(typ);
-            let m = s.as_ref().and_then(|s| pack.struct_members(s));
-            if let Some(pack::Struct { name, .. }) = s {
-                println!(
-                    "layout of struct {} {{",
-                    name.as_deref().unwrap_or("<anonymous>")
-                );
-            }
-            if let Some(m) = m {
-                for (offset, members) in m.iter() {
-                    for pack::Member { name, typ, .. } in members {
-                        let type_string = pack
-                            .type_to_string(*typ)
-                            .unwrap_or_else(|| format!("Missing{:x?}", typ));
-                        let name_string = name.as_deref().unwrap_or("<anonymous>");
-                        println!("{: >6}: {: <20} {}", offset, type_string, name_string);
-                    }
-                }
-            }
-            if s.is_some() {
-                println!("}}");
-            }
-        } else {
-            println!("")
-        }
-    }
-    Ok(())
-}
-
 fn print_extracted_symbol(sym: ExtractedSymbol, pack: &Pack) {
     fn indent(depth: usize) {
         for _ in 0..depth {
@@ -702,30 +635,86 @@ fn print_extracted_symbol(sym: ExtractedSymbol, pack: &Pack) {
     inner(sym, pack, 0);
 }
 
-fn query_symbols(DisArgs { pack_file, symbol }: DisArgs) -> Result<()> {
+fn query_symbols(
+    QueryArgs {
+        pack_file,
+        query,
+        hex_dump,
+        structure,
+    }: QueryArgs,
+) -> Result<()> {
+    let q: Query = query.clone().parse().map_err(|e| {
+        miette::Report::from(e)
+            .with_source_code(miette::NamedSource::new("command-line", query.clone()))
+    })?;
     let core: Core = pack_file.try_into()?;
 
-    let (executable, symbol) = if let Some((exec, symbol)) = symbol.split_once("::") {
-        (Some(exec), symbol)
-    } else {
-        (None, symbol.as_str())
-    };
-    let mut parts = symbol.split(".");
-    // TODO---------------------------v
-    let start_symbol = parts.next().unwrap();
-    let addresses = core
-        .get_start_symbols(start_symbol, executable)
-        .unwrap_or_default();
+    let addresses = core.global_addr(q.global);
     for (addr, typ) in addresses.into_iter() {
-        let parts = parts.clone();
-        let mut aset = BTreeSet::new();
-        aset.insert(addr);
-        if let Some((addr, typ)) = core.query(parts, aset, typ) {
-            for a in addr {
-                if let Some(val) = core.symbol_value(typ, a) {
-                    print!("{:x}: ", a);
-                    print_extracted_symbol(val, &core.pack);
-                    println!("");
+        let success = core.filter(&q.filters, addr, typ).map_err(|e| {
+            miette::Report::from(e)
+                .with_source_code(miette::NamedSource::new("command-line", query.clone()))
+        })?;
+        match success {
+            QuerySuccess::Addresses(Addresses { addrs, typ }) => {
+                if structure {
+                    println!(
+                        " type {}",
+                        core.pack
+                            .type_to_string(typ)
+                            .as_deref()
+                            .unwrap_or("unknwon")
+                    );
+                    let s = core.pack.lookup_struct(typ);
+                    let m = s.as_ref().and_then(|s| core.pack.struct_members(s));
+                    if let Some(pack::Struct { name, .. }) = s {
+                        println!(
+                            "layout of struct {} {{",
+                            name.as_deref().unwrap_or("<anonymous>")
+                        );
+                    }
+                    if let Some(m) = m {
+                        for (offset, members) in m.iter() {
+                            for pack::Member { name, typ, .. } in members {
+                                let type_string = core
+                                    .pack
+                                    .type_to_string(typ.clone())
+                                    .unwrap_or_else(|| format!("Missing{:x?}", typ));
+                                let name_string = name.as_deref().unwrap_or("<anonymous>");
+                                println!("{: >6}: {: <20} {}", offset, type_string, name_string);
+                            }
+                        }
+                    }
+                    if s.is_some() {
+                        println!("}}");
+                    }
+                    continue;
+                }
+                for a in addrs.into_values() {
+                    if hex_dump {
+                        if let Some(size) = core.pack.size_of(typ) {
+                            let mut buff = vec![0u8; size as usize];
+                            match core.read_into(a, &mut buff) {
+                                Ok(()) => print_hex_dump(a, &buff),
+                                Err(_) => {
+                                    println!("    {:08x} not present in core dump", a);
+                                }
+                            }
+                        }
+                    } else if let Some(val) = core.symbol_value(typ, a) {
+                        print!("{:x}: ", a);
+                        print_extracted_symbol(val, &core.pack);
+                        println!("");
+                    }
+                }
+            }
+            QuerySuccess::Backtraces(bts) => {
+                for (addr, bt) in bts {
+                    if bt.frames.is_empty() {
+                        continue;
+                    }
+                    println!("{:08x}:", addr);
+                    print!("{}", bt);
                 }
             }
         }
@@ -810,10 +799,16 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
         aset.insert(addr);
         let (thread_addrs, thread_typ) =
             or_continue!(core.query("llnodes(next).*".split("."), aset, typ));
-        let (thread_size, size_typ) =
-            or_continue!(core.query("p_ldinf.stack_size".split("."), thread_addrs.clone(), thread_typ));
-        let (thread_start, start_typ) =
-            or_continue!(core.query("ctx_ctrl.sp_limit".split("."), thread_addrs.clone(), thread_typ));
+        let (thread_size, size_typ) = or_continue!(core.query(
+            "p_ldinf.stack_size".split("."),
+            thread_addrs.clone(),
+            thread_typ
+        ));
+        let (thread_start, start_typ) = or_continue!(core.query(
+            "ctx_ctrl.sp_limit".split("."),
+            thread_addrs.clone(),
+            thread_typ
+        ));
         let (thread_psp, psp_typ) =
             or_continue!(core.query("ctx_ctrl.sp".split("."), thread_addrs.clone(), thread_typ));
         for (((addr, &size_addr), &psp_addr), &start_addr) in thread_addrs
@@ -846,7 +841,9 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
         }
     }
     let max_stack_size = out.iter().max_by_key(|(_n, si, _st, _p, _u)| si).unwrap().1;
-    let max_name_len = out.iter().max_by_key(|(n, _si, _st, _p, _u)| n.len())
+    let max_name_len = out
+        .iter()
+        .max_by_key(|(n, _si, _st, _p, _u)| n.len())
         .unwrap()
         .0
         .len();
@@ -905,20 +902,18 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
     let mut bt = core.backtrace(regs);
     bt.print_regs(args.regs);
     print!("{}", bt);
-    let mut z_reg_queries = BTreeMap::new();
-    z_reg_queries.insert(
-        Reg::Pc,
-        ("arch.mode", Some(Box::new(|m| 0xffffff00u32 | m >> 8))),
-    );
-    z_reg_queries.insert(Reg::PspNs, ("callee_saved.psp", None));
-    z_reg_queries.insert(Reg::R4, ("callee_saved.v1", None));
-    z_reg_queries.insert(Reg::R5, ("callee_saved.v2", None));
-    z_reg_queries.insert(Reg::R6, ("callee_saved.v3", None));
-    z_reg_queries.insert(Reg::R7, ("callee_saved.v4", None));
-    z_reg_queries.insert(Reg::R8, ("callee_saved.v5", None));
-    z_reg_queries.insert(Reg::R9, ("callee_saved.v6", None));
-    z_reg_queries.insert(Reg::R10, ("callee_saved.v7", None));
-    z_reg_queries.insert(Reg::R11, ("callee_saved.v8", None));
+    let z_reg_queries = maplit::btreemap! {
+        Reg::Pc => ("arch.mode", Some(Box::new(|m| 0xffffff00u32 | m >> 8))),
+        Reg::PspNs => ("callee_saved.psp", None),
+        Reg::R4 => ("callee_saved.v1", None),
+        Reg::R5 => ("callee_saved.v2", None),
+        Reg::R6 => ("callee_saved.v3", None),
+        Reg::R7 => ("callee_saved.v4", None),
+        Reg::R8 => ("callee_saved.v5", None),
+        Reg::R9 => ("callee_saved.v6", None),
+        Reg::R10 => ("callee_saved.v7", None),
+        Reg::R11 => ("callee_saved.v8", None),
+    };
     let addresses = core
         .get_start_symbols("_kernel", Some("zephyr"))
         .unwrap_or_default();
@@ -936,12 +931,14 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
             or_continue!(core.query(THREAD_QUERY.split("."), single_set(addr), typ));
         for threadaddr in thread_addrs {
             if let Some(regs) = core.fill_registers((threadaddr, thread_typ), &z_reg_queries) {
-                let name = match core.query(
-                    "name".split("."),
-                    single_set(threadaddr),
-                    thread_typ,
-                ).and_then(|(n, nt)| core.symbol_value(nt, n.into_iter().nth(0).unwrap())) {
-                    Some(ExtractedSymbol{val: SymVal::CString(s, _), ..}) => s,
+                let name = match core
+                    .query("name".split("."), single_set(threadaddr), thread_typ)
+                    .and_then(|(n, nt)| core.symbol_value(nt, n.into_iter().nth(0).unwrap()))
+                {
+                    Some(ExtractedSymbol {
+                        val: SymVal::CString(s, _),
+                        ..
+                    }) => s,
                     _ => format!("{:08x}", threadaddr),
                 };
                 println!(
@@ -951,7 +948,12 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
                 );
                 let mut bt = core.backtrace(regs);
                 bt.print_regs(args.regs);
-                if bt.frames.first().map(|f| f.is_exception_frame()).unwrap_or(false) {
+                if bt
+                    .frames
+                    .first()
+                    .map(|f| f.is_exception_frame())
+                    .unwrap_or(false)
+                {
                     bt.frames.remove(0);
                 }
                 print!("{}", bt);
@@ -965,16 +967,16 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
         .get_start_symbols("partition_listhead", Some("tfm_s"))
         .unwrap_or_default();
     for (addr, typ) in addresses.into_iter() {
-        let (addrs, thread_typ) = or_continue!(
-            core.query("llnodes(next).*".split("."), single_set(addr), typ));
+        let (addrs, thread_typ) =
+            or_continue!(core.query("llnodes(next).*".split("."), single_set(addr), typ));
         for threadaddr in addrs {
             if let Some(regs) = core.fill_registers((threadaddr, thread_typ), &tfm_reg_queries) {
                 let name = match core.pack.nearest_elf_symbol(threadaddr) {
-                    Some(pack::Symbol{name, ..}) => name
+                    Some(pack::Symbol { name, .. }) => name
                         .trim_start_matches("tfm_")
                         .trim_end_matches("_partition_runtime_item")
                         .to_string(),
-                    None => format!("{:08x}", threadaddr)
+                    None => format!("{:08x}", threadaddr),
                 };
                 println!(
                     "Thread {}::{}",
@@ -983,7 +985,12 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
                 );
                 let mut bt = core.backtrace(regs);
                 bt.print_regs(args.regs);
-                if bt.frames.first().map(|f| f.is_exception_frame()).unwrap_or(false) {
+                if bt
+                    .frames
+                    .first()
+                    .map(|f| f.is_exception_frame())
+                    .unwrap_or(false)
+                {
                     bt.frames.remove(0);
                 }
                 print!("{}", bt);
@@ -993,7 +1000,7 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
     Ok(())
 }
 
-fn hex_dump(address: u32, buff: &[u8]) {
+fn print_hex_dump(address: u32, buff: &[u8]) {
     println!("         0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f");
     let addr_range = (address as usize)..(address as usize + buff.len());
     let base = (address & !0xf) as usize;
@@ -1021,52 +1028,6 @@ fn hex_dump(address: u32, buff: &[u8]) {
         }
         println!("");
     }
-}
-
-fn hexdump_value(args: DisArgs) -> Result<()> {
-    let (executable, symbol) = if let Some((exec, symbol)) = args.symbol.split_once("::") {
-        (Some(exec), symbol)
-    } else {
-        (None, args.symbol.as_str())
-    };
-    let mut parts = symbol.split(".");
-    // TODO---------------------------v
-    let start_symbol = parts.next().unwrap();
-    let core: Core = args.pack_file.try_into()?;
-    let addresses = core
-        .get_start_symbols(start_symbol, executable)
-        .unwrap_or_default();
-    for (addr, typ) in addresses.into_iter() {
-        let parts = parts.clone();
-        let mut aset = BTreeSet::new();
-        aset.insert(addr);
-        if let Some((addr, typ)) = core.query(parts, aset, typ) {
-            for a in addr {
-                if let Some(size) = core.pack.size_of(typ) {
-                    let mut buff = vec![0u8; size as usize];
-                    match core.read_into(a, &mut buff) {
-                        Ok(()) => {
-                            println!(
-                                "    {}::{}",
-                                core.pack.eid_to_name(typ.eid).unwrap(),
-                                symbol
-                            );
-                            hex_dump(a, &buff);
-                        }
-                        Err(_) => {
-                            println!(
-                                "    {}::{} ({:08x}) not present in core dump",
-                                core.pack.eid_to_name(typ.eid).unwrap(),
-                                symbol,
-                                a,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 fn pad_num(num: u32, by: u32) -> u32 {
@@ -1133,25 +1094,30 @@ fn dump(args: DumpArgs) -> Result<()> {
     let mut registers_bytes = Vec::new();
     for (regnum, val) in registers.into_iter().enumerate() {
         let mut bytes = [0x0u8; 8];
-        bytes.pwrite_with(regnum as u32, 0, ctx.le).into_diagnostic()?;
+        bytes
+            .pwrite_with(regnum as u32, 0, ctx.le)
+            .into_diagnostic()?;
         bytes.pwrite_with(val, 4, ctx.le).into_diagnostic()?;
         registers_bytes.extend_from_slice(&bytes);
     }
-    let notes = vec![(
-        Note {
-            n_namesz: (AEROLOGY_NOTES_NAME.len() + 1) as u32,
-            n_descsz: pack_data.len() as u32,
-            n_type: AEROLOGY_TYPE_PACK,
-        },
-        pack_data
-    ), (
-        Note {
-            n_namesz: (AEROLOGY_NOTES_NAME.len() + 1) as u32,
-            n_descsz: registers_bytes.len() as u32,
-            n_type: AEROLOGY_TYPE_REGS,
-        },
-        registers_bytes,
-    )];
+    let notes = vec![
+        (
+            Note {
+                n_namesz: (AEROLOGY_NOTES_NAME.len() + 1) as u32,
+                n_descsz: pack_data.len() as u32,
+                n_type: AEROLOGY_TYPE_PACK,
+            },
+            pack_data,
+        ),
+        (
+            Note {
+                n_namesz: (AEROLOGY_NOTES_NAME.len() + 1) as u32,
+                n_descsz: registers_bytes.len() as u32,
+                n_type: AEROLOGY_TYPE_REGS,
+            },
+            registers_bytes,
+        ),
+    ];
     pheaders.retain(|ph| ph.contents.is_some());
 
     let filename = args.dump_file.unwrap_or_else(|| {
@@ -1238,6 +1204,13 @@ fn dump(args: DumpArgs) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    miette::set_hook(Box::new(|_| {
+        let mut theme = miette::GraphicalTheme::unicode();
+        theme.styles = miette::ThemeStyles::ansi();
+        theme.characters.lbot = '└';
+        theme.characters.ltop = '┌';
+        Box::new(miette::GraphicalReportHandler::new_themed(theme))
+    }))?;
     let cli = Cli::parse();
     use Command::*;
     match cli.command {
@@ -1248,9 +1221,7 @@ fn main() -> Result<()> {
         Stacks(args) => print_stacks(args),
         Backtrace(args) => print_backtrace(args),
         Disassemble(args) => print_disassembly(args),
-        SymbolInfo(args) => print_symbol_info(args),
-        SymbolValue(args) => query_symbols(args),
-        HexdumpValue(args) => hexdump_value(args),
+        Query(args) => query_symbols(args),
         Dump(args) => dump(args),
     }
 }

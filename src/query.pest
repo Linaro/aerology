@@ -1,0 +1,16 @@
+WHITESPACE = _{ " " | "\t" | NEWLINE }
+COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") 
+           | ("//" ~ (!NEWLINE ~ ANY) ~ NEWLINE)
+           }
+symbol = ${ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+member = ${ "." ~ symbol }
+number = { ASCII_DIGIT+ }
+index = { "[" ~ number? ~ "]" }
+global = { (symbol ~ "::")? ~ symbol }
+deref = { ".*" }
+postfix = { (member | index | deref)+ }
+reg_assignment = { symbol ~ "=" ~ postfix }
+backtrace = { "bt" ~ (reg_assignment)* }
+llnodes = { "llnodes" ~ member }
+filter = { postfix | backtrace | llnodes }
+query = _{ SOI ~ global ~ postfix? ~ ("=>" ~ filter)* ~ EOI } 
