@@ -561,7 +561,6 @@ impl Core {
     }
 
     fn linked_list_nodes(&self, pf: &query::Postfix, intermediate: &mut Addresses) -> Result<()> {
-        self.step_by_postfix(pf, intermediate)?;
         let heads = intermediate.clone();
         let mut all_nodes = heads.clone();
         loop {
