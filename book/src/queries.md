@@ -94,7 +94,7 @@ Error:
    ·                 ───┬──
    ·                    └── missing
    └────
-  help: consider replacing with one of ["cpus", "ready_q", "threads"] instead
+  help: consider replacing with "cpus", "ready_q" or "threads" instead
 ```
 
 If we try to select a member of something that's not a struct, such as the cpu

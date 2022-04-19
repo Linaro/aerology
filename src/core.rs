@@ -10,7 +10,7 @@ use goblin::elf::Elf;
 
 use miette::SourceSpan;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, enumerate};
 use crate::pack::{self, Gid, Pack, Symbol, Variable, AEROLOGY_NOTES_NAME, AEROLOGY_TYPE_REGS};
 use crate::query;
 
@@ -632,7 +632,7 @@ impl Core {
                     Error::MemberMissing(
                         sym.span.clone(),
                         sym.name.clone(),
-                        format!("{:?}", self.pack.struct_member_names(&srt)),
+                        enumerate(&self.pack.struct_member_names(&srt)),
                     )
                 })?;
                 for (_, addr) in &mut intermediate.addrs {

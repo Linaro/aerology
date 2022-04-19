@@ -23,7 +23,7 @@ pub enum Error {
     #[error("Read from an invalid Address {0:x}")]
     InvalidAddress(u32),
     #[error("member not found {1:?}")]
-    #[diagnostic(help("consider replacing with one of {2} instead"))]
+    #[diagnostic(help("consider replacing with {2} instead"))]
     MemberMissing(#[label("missing")] SourceSpan, String, String),
     #[error("type mismatch")]
     TypeMismatch {
