@@ -891,12 +891,13 @@ impl Core {
         let _from_ns_mode = payload & (1 << 3) != 0;
         let sp_sel = payload & (1 << 2) != 0;
         let _secure_exception = payload & (1 << 0) != 0;
-        let mut cur_sp = match (sp_sel, return_to_secure_stack) {
-            (true, false) => regs.get(Reg::PspNs)?,
-            (true, true) => regs.get(Reg::PspS)?,
-            (false, true) => regs.get(Reg::MspS)?,
-            (false, false) => regs.get(Reg::MspNs)?,
+        let cur_sp_reg = match (sp_sel, return_to_secure_stack) {
+            (true, false) => Reg::PspNs,
+            (true, true) => Reg::PspS,
+            (false, true) => Reg::MspS,
+            (false, false) => Reg::MspNs,
         };
+        let mut cur_sp = regs.get(cur_sp_reg)?;
         if default_stacking && return_to_secure_stack {
             // skip over the "Integrity signature" and "Reserved" fields
             // cur_sp += 2 * 4;
@@ -940,6 +941,7 @@ impl Core {
             cur_sp += 18 * 4;
         }
         regs.set(Reg::Sp, cur_sp);
+        regs.set(cur_sp_reg, cur_sp);
         Some(old_regs)
     }
 
