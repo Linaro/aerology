@@ -5,8 +5,6 @@ use std::io::prelude::*;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use capstone::prelude::*;
-use capstone::InsnGroupType;
 
 use clap::{Parser, Subcommand};
 
@@ -36,6 +34,9 @@ use crate::core::{Addresses, Core, ExtractedSymbol, QuerySuccess, Reg, SymVal};
 
 mod query;
 use query::Query;
+
+mod arch;
+use arch::{CFSR, SFSR, SFAR, BFAR, MMFAR};
 
 #[derive(Parser, Debug)]
 /// Inspect Zephyr applications
@@ -122,6 +123,8 @@ enum Command {
     Stacks(DtsArgs),
     /// Print a backtrace for all threads
     Backtrace(BtArgs),
+    /// Decode exception info, if any
+    DecodeException(BtArgs),
     /// Disassemble functions from all packaged binaries
     Disassemble(DisArgs),
     /// Print the a value, structure or hex-dump of the matching symbols
@@ -455,6 +458,8 @@ fn print_segments(args: SegmentsArgs) -> Result<()> {
 }
 
 fn print_disassembly(args: DisArgs) -> Result<()> {
+    use capstone::prelude::*;
+    use capstone::InsnGroupType;
     let pack: Pack = args.pack_file.try_into()?;
     let (executable, symbol) = if let Some((exec, symbol)) = args.symbol.split_once("::") {
         (Some(exec), symbol)
@@ -1000,6 +1005,61 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
     Ok(())
 }
 
+fn decode_exc(args: BtArgs) -> Result<()> {
+    let core: Core = args.pack_file.try_into()?;
+    let mut buf = [0u8; 4];
+    if core.read_into(SFSR::ADDR, &mut buf).is_ok() {
+        if let Some(sfsr) = SFSR::from_bits(u32::from_le_bytes(buf.clone())) {
+            let errors = sfsr.decode_error();
+            if !errors.is_empty() {
+                println!("Secure Fault");
+                for e in errors {
+                    println!(" ├─ {}", e);
+                }
+                if sfsr.contains(SFSR::SFARVALID) {
+                    if core.read_into(SFAR::ADDR, &mut buf).is_ok() {
+                        println!(" └─ Faulting Address: {:08x}", u32::from_le_bytes(buf.clone()));
+                    } else {
+                        println!(" └─ Faulting Address Register not present in core dump");
+                    }
+                } else {
+                    println!(" └─ No Faulting Address");
+                }
+            }
+        }
+    }
+    if core.read_into(CFSR::ADDR, &mut buf).is_ok() {
+        if let Some(cfsr) = CFSR::from_bits(u32::from_le_bytes(buf.clone())) {
+            let errors = cfsr.decode_error();
+            if !errors.is_empty() {
+                println!("General Fault");
+                for e in errors {
+                    println!(" ├─ {}", e);
+                }
+                if cfsr.contains(CFSR::MMARVALID) {
+                    if core.read_into(MMFAR::ADDR, &mut buf).is_ok() {
+                        println!(" ├─ MM Faulting Address: {:08x}", u32::from_le_bytes(buf.clone()));
+                    } else {
+                        println!(" ├─ MM Faulting Address Register not present in core dump");
+                    }
+                } else {
+                    println!(" ├─ No MM Faulting Address");
+                }
+                if cfsr.contains(CFSR::MMARVALID) {
+                    if core.read_into(BFAR::ADDR, &mut buf).is_ok() {
+                        println!(" └─ Bus Faulting Address: {:08x}", u32::from_le_bytes(buf.clone()));
+                    } else {
+                        println!(" └─ Bus Faulting Address Register not present in core dump");
+                    }
+                } else {
+                    println!(" └─ No Bus Faulting Address");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn print_hex_dump(address: u32, buff: &[u8]) {
     println!("         0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f");
     let addr_range = (address as usize)..(address as usize + buff.len());
@@ -1048,11 +1108,39 @@ fn note_size(note: &Note) -> u32 {
 }
 
 fn dump(args: DumpArgs) -> Result<()> {
+    // SCB: System Control Block. See D1.1.11 of the arm arm
+    const SCB_ADDR: u32 = 0xe000ed00;
+    const SCB_SIZE: u32 = 0x90;
+    // SAU: Security Attribution Unit. See D1.1.13 of the arm arm
+    const SAU_ADDR: u32 = 0xe000edd0;
+    const SAU_SIZE: u32 = 0x1c;
     let pack: Pack = args.pack_file.clone().try_into()?;
     let mut client =
         GdbClient::new(args.gdb_port.unwrap_or(1234)).context("Could not connect to gdb server")?;
 
     let mut pheaders: Vec<_> = pack.program_headers().iter().cloned().collect();
+    // Push the SCB and SAU into the list of program headers.
+    // The actual values in the Program Headrs don't really matter.
+    pheaders.push(pack::ProgramHeader {
+        eid: usize::MAX,
+        base: SCB_ADDR,
+        size: SCB_SIZE,
+        read: true,
+        write: false,
+        zeroed: false,
+        executable: false,
+        contents: None,
+    });
+    pheaders.push(pack::ProgramHeader {
+        eid: usize::MAX,
+        base: SAU_ADDR,
+        size: SAU_SIZE,
+        read: true,
+        write: false,
+        zeroed: false,
+        executable: false,
+        contents: None,
+    });
     // client.halt()?;
     for ph in pheaders.iter_mut() {
         if ph.read && ph.size != 0 {
@@ -1220,6 +1308,7 @@ fn main() -> Result<()> {
         Segments(args) => print_segments(args),
         Stacks(args) => print_stacks(args),
         Backtrace(args) => print_backtrace(args),
+        DecodeException(args) => decode_exc(args),
         Disassemble(args) => print_disassembly(args),
         Query(args) => query_symbols(args),
         Dump(args) => dump(args),
