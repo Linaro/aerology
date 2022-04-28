@@ -12,6 +12,7 @@
         devShell = pkgs.mkShell {
           buildInputs = with pkgs; [
             rustc
+            rustfmt
             cargo
             cargo-watch
             mdbook

@@ -123,13 +123,17 @@ impl SFSR {
             out.push("Attribution Unit Violation: NS attempted to access a secure-only addresss");
         }
         if self.contains(Self::INVTRAN) {
-            out.push("Invalid Transition: An untagged branch tried to cross domains (S->NS or NS->S)");
+            out.push(
+                "Invalid Transition: An untagged branch tried to cross domains (S->NS or NS->S)",
+            );
         }
         if self.contains(Self::LSPERR) {
             out.push("Lazy Stack Preservation Error: Lazy Floating-point stacking caused an SAU r IDAU error");
         }
         if self.contains(Self::LSERR) {
-            out.push("Lazy State Error: An error occured during lazy state activation or deactivation");
+            out.push(
+                "Lazy State Error: An error occured during lazy state activation or deactivation",
+            );
         }
         out
     }

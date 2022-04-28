@@ -6,7 +6,6 @@ use std::io::prelude::*;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-
 use clap::{Parser, Subcommand};
 
 use miette::{IntoDiagnostic, Result, WrapErr};
@@ -31,13 +30,13 @@ mod gdb;
 use gdb::Client as GdbClient;
 
 mod core;
-use crate::core::{Addresses, Core, ExtractedSymbol, QuerySuccess, Reg, SymVal, Registers};
+use crate::core::{Addresses, Core, ExtractedSymbol, QuerySuccess, Reg, Registers, SymVal};
 
 mod query;
-use query::{Query, Filter};
+use query::{Filter, Query};
 
 mod arch;
-use arch::{CFSR, SFSR, SFAR, BFAR, MMFAR};
+use arch::{BFAR, CFSR, MMFAR, SFAR, SFSR};
 
 #[derive(Parser, Debug)]
 /// Inspect Zephyr applications
@@ -647,7 +646,7 @@ macro_rules! bail_src {
             miette::Report::from(e)
                 .with_source_code(miette::NamedSource::new("command-line", $source))
         })?
-    }
+    };
 }
 
 fn query_symbols(
@@ -737,10 +736,22 @@ fn z_stacks(core: &Core, threads: QuerySuccess) -> Option<Vec<(String, u64, u64,
     let size_filter: Filter = ".stack_info.size".parse().unwrap();
     let start_filter: Filter = ".stack_info.start".parse().unwrap();
     let psp_filter: Filter = ".callee_saved.psp".parse().unwrap();
-    let name_a = core.filter_inner(&[name_filter], threads.clone()).ok()?.into_addrs()?;
-    let size_a = core.filter_inner(&[size_filter], threads.clone()).ok()?.into_addrs()?;
-    let start_a = core.filter_inner(&[start_filter], threads.clone()).ok()?.into_addrs()?;
-    let psp_a = core.filter_inner(&[psp_filter], threads.clone()).ok()?.into_addrs()?;
+    let name_a = core
+        .filter_inner(&[name_filter], threads.clone())
+        .ok()?
+        .into_addrs()?;
+    let size_a = core
+        .filter_inner(&[size_filter], threads.clone())
+        .ok()?
+        .into_addrs()?;
+    let start_a = core
+        .filter_inner(&[start_filter], threads.clone())
+        .ok()?
+        .into_addrs()?;
+    let psp_a = core
+        .filter_inner(&[psp_filter], threads.clone())
+        .ok()?
+        .into_addrs()?;
     for tid in name_a.addrs.keys() {
         let mut thunk = || {
             let name = core.symbol_value(name_a.typ, *name_a.addrs.get(tid)?)?;
@@ -752,7 +763,8 @@ fn z_stacks(core: &Core, threads: QuerySuccess) -> Option<Vec<(String, u64, u64,
                 SymVal::Unsigned(size),
                 SymVal::Unsigned(start),
                 SymVal::Unsigned(psp),
-            ) = (name.val, size.val, start.val, psp.val) {
+            ) = (name.val, size.val, start.val, psp.val)
+            {
                 out.push((format!("zephyr::{}", name), size, start, psp, 0xaau8));
             }
             Some(())
@@ -767,7 +779,7 @@ fn tfm_thread_name<'a>(core: &'a Core, tid: u32) -> Cow<'a, str> {
         let name = &core.pack.nearest_elf_symbol(tid)?.name;
         Some(
             name.trim_start_matches("tfm_")
-                .trim_end_matches("_partition_runtime_item")
+                .trim_end_matches("_partition_runtime_item"),
         )
     };
     match thunk() {
@@ -781,20 +793,27 @@ fn tfm_stacks(core: &Core, threads: QuerySuccess) -> Option<Vec<(String, u64, u6
     let size_filter: Filter = ".p_ldinf.stack_size".parse().unwrap();
     let start_filter: Filter = ".ctx_ctrl.sp_limit".parse().unwrap();
     let psp_filter: Filter = ".ctx_ctrl.sp".parse().unwrap();
-    let size_a = core.filter_inner(&[size_filter], threads.clone()).ok()?.into_addrs()?;
-    let start_a = core.filter_inner(&[start_filter], threads.clone()).ok()?.into_addrs()?;
-    let psp_a = core.filter_inner(&[psp_filter], threads.clone()).ok()?.into_addrs()?;
+    let size_a = core
+        .filter_inner(&[size_filter], threads.clone())
+        .ok()?
+        .into_addrs()?;
+    let start_a = core
+        .filter_inner(&[start_filter], threads.clone())
+        .ok()?
+        .into_addrs()?;
+    let psp_a = core
+        .filter_inner(&[psp_filter], threads.clone())
+        .ok()?
+        .into_addrs()?;
     for tid in size_a.addrs.keys() {
         let mut thunk = || {
             let name = tfm_thread_name(core, *size_a.addrs.get(tid)?);
             let size = core.symbol_value(size_a.typ, *size_a.addrs.get(tid)?)?;
             let start = core.symbol_value(start_a.typ, *start_a.addrs.get(tid)?)?;
             let psp = core.symbol_value(psp_a.typ, *psp_a.addrs.get(tid)?)?;
-            if let (
-                SymVal::Unsigned(size),
-                SymVal::Unsigned(start),
-                SymVal::Unsigned(psp),
-            ) = (size.val, start.val, psp.val) {
+            if let (SymVal::Unsigned(size), SymVal::Unsigned(start), SymVal::Unsigned(psp)) =
+                (size.val, start.val, psp.val)
+            {
                 out.push((format!("tfm_s::{}", name), size, start, psp, 0x00u8));
             }
             Some(())
@@ -824,7 +843,9 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
         .map(|(n, _si, _st, _p, _u)| n.len())
         .max()
         .unwrap_or_default();
-    let bar_len = (74usize - (3 * 6)).checked_sub(max_name_len).unwrap_or_default();
+    let bar_len = (74usize - (3 * 6))
+        .checked_sub(max_name_len)
+        .unwrap_or_default();
     let each_bar = (max_stack_size as usize) / bar_len;
     println!("Key: █: currently in use ▒: used in the past ░: never used");
     println!(
@@ -949,7 +970,10 @@ fn decode_exc(args: BtArgs) -> Result<()> {
                 }
                 if sfsr.contains(SFSR::SFARVALID) {
                     if core.read_into(SFAR::ADDR, &mut buf).is_ok() {
-                        println!(" └─ Faulting Address: {:08x}", u32::from_le_bytes(buf.clone()));
+                        println!(
+                            " └─ Faulting Address: {:08x}",
+                            u32::from_le_bytes(buf.clone())
+                        );
                     } else {
                         println!(" └─ Faulting Address Register not present in core dump");
                     }
@@ -969,7 +993,10 @@ fn decode_exc(args: BtArgs) -> Result<()> {
                 }
                 if cfsr.contains(CFSR::MMARVALID) {
                     if core.read_into(MMFAR::ADDR, &mut buf).is_ok() {
-                        println!(" ├─ MM Faulting Address: {:08x}", u32::from_le_bytes(buf.clone()));
+                        println!(
+                            " ├─ MM Faulting Address: {:08x}",
+                            u32::from_le_bytes(buf.clone())
+                        );
                     } else {
                         println!(" ├─ MM Faulting Address Register not present in core dump");
                     }
@@ -978,7 +1005,10 @@ fn decode_exc(args: BtArgs) -> Result<()> {
                 }
                 if cfsr.contains(CFSR::MMARVALID) {
                     if core.read_into(BFAR::ADDR, &mut buf).is_ok() {
-                        println!(" └─ Bus Faulting Address: {:08x}", u32::from_le_bytes(buf.clone()));
+                        println!(
+                            " └─ Bus Faulting Address: {:08x}",
+                            u32::from_le_bytes(buf.clone())
+                        );
                     } else {
                         println!(" └─ Bus Faulting Address Register not present in core dump");
                     }

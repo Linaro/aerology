@@ -10,7 +10,7 @@ use goblin::elf::Elf;
 
 use miette::SourceSpan;
 
-use crate::error::{Error, Result, enumerate};
+use crate::error::{enumerate, Error, Result};
 use crate::pack::{self, Gid, Pack, Symbol, Variable, AEROLOGY_NOTES_NAME, AEROLOGY_TYPE_REGS};
 use crate::query;
 
@@ -474,11 +474,13 @@ impl Core {
 
     pub fn query<'a>(&'a self, query: &query::Query) -> Result<QuerySuccess<'a>> {
         let globals = self.global_addr(&query.global);
-        let (_, typ) = globals.first().ok_or_else(|| Error::MemberMissing(
-            query.global.span.clone(),
-            query.global.sym.name.clone(),
-            "".to_string(),
-        ))?;
+        let (_, typ) = globals.first().ok_or_else(|| {
+            Error::MemberMissing(
+                query.global.span.clone(),
+                query.global.sym.name.clone(),
+                "".to_string(),
+            )
+        })?;
         let typ = *typ;
         let typ_name = self.pack.type_to_string(typ);
         for (_, typ) in &globals {
@@ -492,7 +494,7 @@ impl Core {
             }
         }
         let addrs = globals.into_iter().map(|(a, _)| (a, a)).collect();
-        let intermediate = QuerySuccess::Addresses(Addresses{addrs, typ});
+        let intermediate = QuerySuccess::Addresses(Addresses { addrs, typ });
         self.filter_inner(&query.filters, intermediate)
     }
 
@@ -501,7 +503,6 @@ impl Core {
         self.get_start_symbols(&global.sym.name, elf)
             .unwrap_or_default()
     }
-    
 
     pub fn filter_inner<'a>(
         &'a self,
@@ -881,7 +882,10 @@ impl Core {
                 for (key, addr) in suc.addrs {
                     let reg_val = self.symbol_value(suc.typ, addr);
                     match reg_val {
-                        Some(ExtractedSymbol{val: SymVal::Unsigned(val), ..}) => {
+                        Some(ExtractedSymbol {
+                            val: SymVal::Unsigned(val),
+                            ..
+                        }) => {
                             let mut val = val as u32;
                             if let Some(f) = transformer {
                                 val = f(val);
@@ -889,7 +893,7 @@ impl Core {
                             regs.entry(key).or_default().set(reg, val);
                         }
                         _ => {}
-                    }            
+                    }
                 }
             }
         }
