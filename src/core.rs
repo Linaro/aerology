@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
 use std::ops::Deref;
@@ -251,7 +251,15 @@ impl<'a> QuerySuccess<'a> {
         Self::Addresses(Addresses { addrs, typ })
     }
 
-    fn as_mut_addrs<'b>(&'b mut self) -> Option<&'b mut Addresses> {
+    pub fn as_mut_addrs<'b>(&'b mut self) -> Option<&'b mut Addresses> {
+        if let Self::Addresses(addrs) = self {
+            Some(addrs)
+        } else {
+            None
+        }
+    }
+
+    pub fn into_addrs(self) -> Option<Addresses> {
         if let Self::Addresses(addrs) = self {
             Some(addrs)
         } else {
@@ -287,6 +295,15 @@ impl SymVal {
 pub struct ExtractedSymbol {
     pub typ: Gid,
     pub val: SymVal,
+}
+
+impl ExtractedSymbol {
+    pub fn into_cstr(self) -> Option<String> {
+        match self.val {
+            SymVal::CString(name, ..) => Some(name),
+            _ => None,
+        }
+    }
 }
 
 impl TryFrom<PathBuf> for Core {
@@ -349,22 +366,6 @@ impl Core {
             }
         }
         Err(Error::InvalidAddress(address))
-    }
-
-    pub fn addr_present(&self, address: u32) -> bool {
-        for (region_base, regs) in self.regions.range(..=address).rev() {
-            for CoreRegion { size, .. } in regs {
-                let region_offset = (address - region_base) as usize;
-                if *region_base > address {
-                    return false;
-                } else if region_offset > *size {
-                    continue;
-                } else {
-                    return true;
-                }
-            }
-        }
-        false
     }
 
     pub fn registers(&self) -> Registers {
@@ -471,19 +472,42 @@ impl Core {
         }
     }
 
-    pub fn global_addr(&self, global: query::Global) -> Vec<(u32, Gid)> {
+    pub fn query<'a>(&'a self, query: &query::Query) -> Result<QuerySuccess<'a>> {
+        let globals = self.global_addr(&query.global);
+        let (_, typ) = globals.first().ok_or_else(|| Error::MemberMissing(
+            query.global.span.clone(),
+            query.global.sym.name.clone(),
+            "".to_string(),
+        ))?;
+        let typ = *typ;
+        let typ_name = self.pack.type_to_string(typ);
+        for (_, typ) in &globals {
+            let this_name = self.pack.type_to_string(*typ);
+            if this_name != typ_name {
+                return Err(Error::TypeMismatch {
+                    span: query.global.span.clone(),
+                    expected: typ_name.unwrap_or_else(|| "<unknown>".to_string()),
+                    found: this_name.unwrap_or_else(|| "<unknown>".to_string()),
+                });
+            }
+        }
+        let addrs = globals.into_iter().map(|(a, _)| (a, a)).collect();
+        let intermediate = QuerySuccess::Addresses(Addresses{addrs, typ});
+        self.filter_inner(&query.filters, intermediate)
+    }
+
+    pub fn global_addr(&self, global: &query::Global) -> Vec<(u32, Gid)> {
         let elf = global.elf.as_ref().map(|s| s.name.as_str());
         self.get_start_symbols(&global.sym.name, elf)
             .unwrap_or_default()
     }
+    
 
-    pub fn filter<'a>(
+    pub fn filter_inner<'a>(
         &'a self,
         filter: &[query::Filter],
-        addr: u32,
-        typ: Gid,
+        mut intermediate: QuerySuccess<'a>,
     ) -> Result<QuerySuccess<'a>> {
-        let mut intermediate = QuerySuccess::from_pair(addr, typ);
         for f in filter {
             macro_rules! get_inner {
                 ($i:ident, $f:ident) => {
@@ -509,6 +533,16 @@ impl Core {
             }
         }
         Ok(intermediate)
+    }
+
+    pub fn filter<'a>(
+        &'a self,
+        filter: &[query::Filter],
+        addr: u32,
+        typ: Gid,
+    ) -> Result<QuerySuccess<'a>> {
+        let intermediate = QuerySuccess::from_pair(addr, typ);
+        self.filter_inner(filter, intermediate)
     }
 
     fn step_backtrace<'a>(
@@ -765,119 +799,6 @@ impl Core {
         }
     }
 
-    fn step_query(
-        &self,
-        member: &str,
-        addr: &BTreeSet<u32>,
-        typ: Gid,
-    ) -> Option<(BTreeSet<u32>, Gid)> {
-        use crate::pack::Typ::*;
-        match self.pack.lookup_type(typ)? {
-            Pri(_) => None,
-            Ptr(ptr) => {
-                // TODO v
-                assert!(ptr.size == 4);
-                let mut bytes = [0u8; 4];
-                let dest_addrs: BTreeSet<_> = addr
-                    .iter()
-                    .filter_map(|&a| {
-                        self.read_into(a, &mut bytes).ok()?;
-                        let out = u32::from_le_bytes(bytes);
-                        Some(out)
-                    })
-                    .collect();
-                let dest_type = ptr.typ?;
-                if member == "*" {
-                    let mut one_byte = [0u8];
-                    let dest_addrs: BTreeSet<u32> = dest_addrs
-                        .into_iter()
-                        .filter(|&a| self.read_into(a, &mut one_byte).is_ok())
-                        .collect();
-                    Some((dest_addrs, dest_type))
-                } else if dest_addrs.iter().all(|&da| self.addr_present(da)) {
-                    self.step_query(member, &dest_addrs, dest_type)
-                } else {
-                    None
-                }
-            }
-            Arr(arr) => {
-                if !member.starts_with("[") || !member.ends_with("]") {
-                    return None;
-                }
-                if member == "[]" {
-                    let arr_len = self.pack.array_len(arr)? as u32;
-                    let stride = self.pack.size_of(arr.typ)? as u32;
-                    let dest_addrs = addr
-                        .into_iter()
-                        .map(|a| (0..arr_len).filter_map(move |ia| a.checked_add(ia * stride)))
-                        .flatten()
-                        .collect();
-                    Some((dest_addrs, arr.typ))
-                } else {
-                    let member_num: u32 = (&member[1..member.len() - 1]).parse().ok()?;
-                    let arr_len = self.pack.array_len(arr)? as u32;
-                    if member_num >= arr_len {
-                        return None;
-                    }
-                    let stride = self.pack.size_of(arr.typ)? as u32;
-                    let dest_addrs = addr
-                        .into_iter()
-                        .filter_map(|a| a.checked_add(stride * member_num))
-                        .collect();
-                    Some((dest_addrs, arr.typ))
-                }
-            }
-            Srt(srt) => {
-                if member.starts_with("llnodes(") && member.ends_with(")") {
-                    let next_member = &member["llnodes(".len()..member.len() - 1];
-                    let (next_member, _outer_type) =
-                        if let Some((outer_type, next_member)) = next_member.split_once(",") {
-                            (next_member, Some(outer_type))
-                        } else {
-                            (next_member, None)
-                        };
-                    let (heads, typ) = self.step_query(next_member, addr, typ)?;
-                    let mut nodes = heads.clone();
-                    let mut addr = heads.clone();
-                    while let Some((node_addrs, _)) = self.step_query(next_member, &addr, typ) {
-                        if node_addrs == heads || addr == node_addrs {
-                            break;
-                        } else {
-                            nodes.extend(node_addrs.clone());
-                            addr = node_addrs;
-                        }
-                    }
-                    if nodes.is_empty() {
-                        None
-                    } else {
-                        Some((nodes, typ))
-                    }
-                } else {
-                    let (offset, typ) = self.pack.offset_of(member, &srt.gid)?;
-                    let dest_addr = addr
-                        .into_iter()
-                        .filter_map(|a| a.checked_add(offset as u32))
-                        .collect();
-                    Some((dest_addr, typ))
-                }
-            }
-        }
-    }
-
-    pub fn query<'a>(
-        &self,
-        parts: impl Iterator<Item = &'a str>,
-        mut addr: BTreeSet<u32>,
-        mut typ: Gid,
-    ) -> Option<(BTreeSet<u32>, Gid)> {
-        for member in parts {
-            let (next_addr, next_typ) = self.step_query(member, &addr, typ)?;
-            addr = next_addr;
-            typ = next_typ;
-        }
-        Some((addr, typ))
-    }
-
     pub fn do_exception_return(&self, regs: &mut Registers) -> Option<Registers> {
         const EXC_RET_PAYLOAD: u32 = 0xffff_ff00;
         let payload = regs.get(Reg::Pc)?;
@@ -947,32 +868,32 @@ impl Core {
 
     pub fn fill_registers<F>(
         &self,
-        thread: (u32, Gid),
-        queries: &BTreeMap<Reg, (&str, Option<F>)>,
-    ) -> Option<Registers>
+        threads: QuerySuccess,
+        queries: BTreeMap<Reg, (query::Filter, Option<F>)>,
+    ) -> Result<BTreeMap<u32, Registers>>
     where
         F: Fn(u32) -> u32,
     {
-        let (thread_addr, thread_typ) = thread;
-        let mut regs = Registers::default();
-        let mut thread_addrs = BTreeSet::new();
-        thread_addrs.insert(thread_addr);
-        for (&reg, (q, transformer)) in queries {
-            let (addr, typ) = self.query(q.split("."), thread_addrs.clone(), thread_typ)?;
-            let addr = addr.into_iter().next()?;
-            let reg_val = self.symbol_value(typ, addr)?;
-            match reg_val.val {
-                SymVal::Unsigned(val) => {
-                    let mut val = val as u32;
-                    if let Some(f) = transformer {
-                        val = f(val);
-                    }
-                    regs.set(reg, val);
+        let mut regs: BTreeMap<_, Registers> = Default::default();
+        for (reg, (q, mut transformer)) in queries.into_iter() {
+            let transformer = &mut transformer;
+            if let QuerySuccess::Addresses(suc) = self.filter_inner(&[q], threads.clone())? {
+                for (key, addr) in suc.addrs {
+                    let reg_val = self.symbol_value(suc.typ, addr);
+                    match reg_val {
+                        Some(ExtractedSymbol{val: SymVal::Unsigned(val), ..}) => {
+                            let mut val = val as u32;
+                            if let Some(f) = transformer {
+                                val = f(val);
+                            }
+                            regs.entry(key).or_default().set(reg, val);
+                        }
+                        _ => {}
+                    }            
                 }
-                _ => {}
             }
         }
-        Some(regs)
+        Ok(regs)
     }
 
     fn backtrace_inner<'a>(

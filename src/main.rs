@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
 use std::fs::File;
@@ -30,10 +31,10 @@ mod gdb;
 use gdb::Client as GdbClient;
 
 mod core;
-use crate::core::{Addresses, Core, ExtractedSymbol, QuerySuccess, Reg, SymVal};
+use crate::core::{Addresses, Core, ExtractedSymbol, QuerySuccess, Reg, SymVal, Registers};
 
 mod query;
-use query::Query;
+use query::{Query, Filter};
 
 mod arch;
 use arch::{CFSR, SFSR, SFAR, BFAR, MMFAR};
@@ -640,6 +641,15 @@ fn print_extracted_symbol(sym: ExtractedSymbol, pack: &Pack) {
     inner(sym, pack, 0);
 }
 
+macro_rules! bail_src {
+    ($result:expr, $source:expr) => {
+        $result.map_err(|e| {
+            miette::Report::from(e)
+                .with_source_code(miette::NamedSource::new("command-line", $source))
+        })?
+    }
+}
+
 fn query_symbols(
     QueryArgs {
         pack_file,
@@ -648,18 +658,12 @@ fn query_symbols(
         structure,
     }: QueryArgs,
 ) -> Result<()> {
-    let q: Query = query.clone().parse().map_err(|e| {
-        miette::Report::from(e)
-            .with_source_code(miette::NamedSource::new("command-line", query.clone()))
-    })?;
+    let q: Query = bail_src!(query.clone().parse(), query.clone());
     let core: Core = pack_file.try_into()?;
 
-    let addresses = core.global_addr(q.global);
+    let addresses = core.global_addr(&q.global);
     for (addr, typ) in addresses.into_iter() {
-        let success = core.filter(&q.filters, addr, typ).map_err(|e| {
-            miette::Report::from(e)
-                .with_source_code(miette::NamedSource::new("command-line", query.clone()))
-        })?;
+        let success = bail_src!(core.filter(&q.filters, addr, typ), query.clone());
         match success {
             QuerySuccess::Addresses(Addresses { addrs, typ }) => {
                 if structure {
@@ -727,136 +731,104 @@ fn query_symbols(
     Ok(())
 }
 
-fn print_stacks(args: DtsArgs) -> Result<()> {
-    const EXECUTABLE: Option<&str> = Some("zephyr");
-    const START_SYMBOL: &str = "_kernel";
-    const THREAD_QUERY: &str = "threads.llnodes(next_thread)";
-    const NAME_QUERY: &str = "name";
-    const SIZE_QUERY: &str = "stack_info.size";
-    const START_QUERY: &str = "stack_info.start";
-    const PSP_QUERY: &str = "callee_saved.psp";
-    let core: Core = args.pack_file.try_into()?;
-    let addresses = core
-        .get_start_symbols(START_SYMBOL, EXECUTABLE)
-        .unwrap_or_default();
-    macro_rules! or_continue {
-        ($q:expr) => {
-            if let Some(r) = $q {
-                r
-            } else {
-                continue;
-            }
-        };
-    }
+fn z_stacks(core: &Core, threads: QuerySuccess) -> Option<Vec<(String, u64, u64, u64, u8)>> {
     let mut out = Vec::new();
-    for (addr, typ) in addresses.into_iter() {
-        let mut aset = BTreeSet::new();
-        aset.insert(addr);
-        let (thread_addrs, thread_typ) =
-            or_continue!(core.query(THREAD_QUERY.split("."), aset, typ));
-        let (thread_name, name_typ) =
-            or_continue!(core.query(NAME_QUERY.split("."), thread_addrs.clone(), thread_typ));
-        let (thread_size, size_typ) =
-            or_continue!(core.query(SIZE_QUERY.split("."), thread_addrs.clone(), thread_typ));
-        let (thread_start, start_typ) =
-            or_continue!(core.query(START_QUERY.split("."), thread_addrs.clone(), thread_typ));
-        let (thread_psp, psp_typ) =
-            or_continue!(core.query(PSP_QUERY.split("."), thread_addrs.clone(), thread_typ));
-        for (((&name_addr, &size_addr), &psp_addr), &start_addr) in thread_name
-            .iter()
-            .zip(&thread_size)
-            .zip(&thread_psp)
-            .zip(&thread_start)
-        {
+    let name_filter: Filter = ".name".parse().unwrap();
+    let size_filter: Filter = ".stack_info.size".parse().unwrap();
+    let start_filter: Filter = ".stack_info.start".parse().unwrap();
+    let psp_filter: Filter = ".callee_saved.psp".parse().unwrap();
+    let name_a = core.filter_inner(&[name_filter], threads.clone()).ok()?.into_addrs()?;
+    let size_a = core.filter_inner(&[size_filter], threads.clone()).ok()?.into_addrs()?;
+    let start_a = core.filter_inner(&[start_filter], threads.clone()).ok()?.into_addrs()?;
+    let psp_a = core.filter_inner(&[psp_filter], threads.clone()).ok()?.into_addrs()?;
+    for tid in name_a.addrs.keys() {
+        let mut thunk = || {
+            let name = core.symbol_value(name_a.typ, *name_a.addrs.get(tid)?)?;
+            let size = core.symbol_value(size_a.typ, *size_a.addrs.get(tid)?)?;
+            let start = core.symbol_value(start_a.typ, *start_a.addrs.get(tid)?)?;
+            let psp = core.symbol_value(psp_a.typ, *psp_a.addrs.get(tid)?)?;
             if let (
-                Some(ExtractedSymbol {
-                    typ: _,
-                    val: SymVal::CString(name, _),
-                }),
-                Some(ExtractedSymbol {
-                    typ: _,
-                    val: SymVal::Unsigned(size),
-                }),
-                Some(ExtractedSymbol {
-                    typ: _,
-                    val: SymVal::Unsigned(start),
-                }),
-                Some(ExtractedSymbol {
-                    typ: _,
-                    val: SymVal::Unsigned(psp),
-                }),
-            ) = (
-                core.symbol_value(name_typ, name_addr),
-                core.symbol_value(size_typ, size_addr),
-                core.symbol_value(start_typ, start_addr),
-                core.symbol_value(psp_typ, psp_addr),
-            ) {
-                let name = format!("zephyr::{}", name);
-                out.push((name, size, start, psp, 0xaau8))
+                SymVal::CString(name, _),
+                SymVal::Unsigned(size),
+                SymVal::Unsigned(start),
+                SymVal::Unsigned(psp),
+            ) = (name.val, size.val, start.val, psp.val) {
+                out.push((format!("zephyr::{}", name), size, start, psp, 0xaau8));
             }
-        }
+            Some(())
+        };
+        let _: Option<()> = thunk();
     }
-    let addresses = core
-        .get_start_symbols("partition_listhead", Some("tfm_s"))
-        .unwrap_or_default();
-    for (addr, typ) in addresses.into_iter() {
-        let mut aset = BTreeSet::new();
-        aset.insert(addr);
-        let (thread_addrs, thread_typ) =
-            or_continue!(core.query("llnodes(next).*".split("."), aset, typ));
-        let (thread_size, size_typ) = or_continue!(core.query(
-            "p_ldinf.stack_size".split("."),
-            thread_addrs.clone(),
-            thread_typ
-        ));
-        let (thread_start, start_typ) = or_continue!(core.query(
-            "ctx_ctrl.sp_limit".split("."),
-            thread_addrs.clone(),
-            thread_typ
-        ));
-        let (thread_psp, psp_typ) =
-            or_continue!(core.query("ctx_ctrl.sp".split("."), thread_addrs.clone(), thread_typ));
-        for (((addr, &size_addr), &psp_addr), &start_addr) in thread_addrs
-            .iter()
-            .zip(&thread_size)
-            .zip(&thread_psp)
-            .zip(&thread_start)
-        {
+    Some(out)
+}
+
+fn tfm_thread_name<'a>(core: &'a Core, tid: u32) -> Cow<'a, str> {
+    let thunk = || {
+        let name = &core.pack.nearest_elf_symbol(tid)?.name;
+        Some(
+            name.trim_start_matches("tfm_")
+                .trim_end_matches("_partition_runtime_item")
+        )
+    };
+    match thunk() {
+        Some(name) => Cow::Borrowed(name),
+        None => Cow::Owned(format!("{:08}", tid)),
+    }
+}
+
+fn tfm_stacks(core: &Core, threads: QuerySuccess) -> Option<Vec<(String, u64, u64, u64, u8)>> {
+    let mut out = Vec::new();
+    let size_filter: Filter = ".p_ldinf.stack_size".parse().unwrap();
+    let start_filter: Filter = ".ctx_ctrl.sp_limit".parse().unwrap();
+    let psp_filter: Filter = ".ctx_ctrl.sp".parse().unwrap();
+    let size_a = core.filter_inner(&[size_filter], threads.clone()).ok()?.into_addrs()?;
+    let start_a = core.filter_inner(&[start_filter], threads.clone()).ok()?.into_addrs()?;
+    let psp_a = core.filter_inner(&[psp_filter], threads.clone()).ok()?.into_addrs()?;
+    for tid in size_a.addrs.keys() {
+        let mut thunk = || {
+            let name = tfm_thread_name(core, *size_a.addrs.get(tid)?);
+            let size = core.symbol_value(size_a.typ, *size_a.addrs.get(tid)?)?;
+            let start = core.symbol_value(start_a.typ, *start_a.addrs.get(tid)?)?;
+            let psp = core.symbol_value(psp_a.typ, *psp_a.addrs.get(tid)?)?;
             if let (
-                Some(ExtractedSymbol {
-                    typ: _,
-                    val: SymVal::Unsigned(size),
-                }),
-                Some(ExtractedSymbol {
-                    typ: _,
-                    val: SymVal::Unsigned(start),
-                }),
-                Some(ExtractedSymbol {
-                    typ: _,
-                    val: SymVal::Unsigned(psp),
-                }),
-            ) = (
-                core.symbol_value(size_typ, size_addr),
-                core.symbol_value(start_typ, start_addr),
-                core.symbol_value(psp_typ, psp_addr),
-            ) {
-                let name = format!("tfm_s::{:x}", addr);
-                out.push((name, size, start, psp, 0x00u8))
+                SymVal::Unsigned(size),
+                SymVal::Unsigned(start),
+                SymVal::Unsigned(psp),
+            ) = (size.val, start.val, psp.val) {
+                out.push((format!("tfm_s::{}", name), size, start, psp, 0x00u8));
             }
-        }
+            Some(())
+        };
+        let _ = thunk();
+    }
+    Some(out)
+}
+
+const ZTHREADS: &str = "zephyr::_kernel.threads => llnodes .next_thread";
+const TTHREADS: &str = "tfm_s::partition_listhead => llnodes .next => .*";
+
+fn print_stacks(args: DtsArgs) -> Result<()> {
+    let zthreads_query: Query = ZTHREADS.parse().unwrap();
+    let core: Core = args.pack_file.try_into()?;
+    let mut out = Vec::new();
+    if let Ok(threads) = core.query(&zthreads_query) {
+        out.extend(z_stacks(&core, threads).unwrap_or_default().into_iter());
+    }
+    let tfm_threads_query: Query = TTHREADS.parse().unwrap();
+    if let Ok(threads) = core.query(&tfm_threads_query) {
+        out.extend(tfm_stacks(&core, threads).unwrap_or_default().into_iter());
     }
     let max_stack_size = out.iter().max_by_key(|(_n, si, _st, _p, _u)| si).unwrap().1;
     let max_name_len = out
         .iter()
-        .max_by_key(|(n, _si, _st, _p, _u)| n.len())
-        .unwrap()
-        .0
-        .len();
-    let bar_len = 74 - (3 * 7) - max_name_len;
+        .map(|(n, _si, _st, _p, _u)| n.len())
+        .max()
+        .unwrap_or_default();
+    let bar_len = (74usize - (3 * 6)).checked_sub(max_name_len).unwrap_or_default();
     let each_bar = (max_stack_size as usize) / bar_len;
     println!("Key: █: currently in use ▒: used in the past ░: never used");
     println!(
-        "{: <nl$} {: >6} {: >6} {: >6}",
+        "{: <nl$} {: >5} {: >5} {: >5}",
         "name",
         "used",
         "max",
@@ -882,7 +854,7 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
         let rendered_used = format!("{:▒<hw$}", rendered_used, hw = high_water_blocks);
         let this_bar_len = size as usize / each_bar;
         println!(
-            "{: <nl$} {: >5}b {: >5}b {: >5}b {:░<ss$}",
+            "{: <nl$} {: >5} {: >5} {: >5} {:░<ss$}",
             name,
             used,
             high_water_mark,
@@ -895,111 +867,70 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
     Ok(())
 }
 
-fn single_set<T: Ord>(i: T) -> BTreeSet<T> {
-    [i].into_iter().collect()
+fn print_thread_bt(core: &Core, regs: Registers, print_regs: bool) {
+    let mut bt = core.backtrace(regs);
+    bt.print_regs(print_regs);
+    if bt
+        .frames
+        .first()
+        .map(|f| f.is_exception_frame())
+        .unwrap_or(false)
+    {
+        bt.frames.remove(0);
+    }
+    print!("{}", bt);
 }
 
 fn print_backtrace(args: BtArgs) -> Result<()> {
-    const THREAD_QUERY: &str = "threads.llnodes(next_thread)";
     let core: Core = args.pack_file.try_into()?;
     let regs = core.registers();
     println!("Registers");
     let mut bt = core.backtrace(regs);
     bt.print_regs(args.regs);
     print!("{}", bt);
-    let z_reg_queries = maplit::btreemap! {
-        Reg::Pc => ("arch.mode", Some(Box::new(|m| 0xffffff00u32 | m >> 8))),
-        Reg::PspNs => ("callee_saved.psp", None),
-        Reg::R4 => ("callee_saved.v1", None),
-        Reg::R5 => ("callee_saved.v2", None),
-        Reg::R6 => ("callee_saved.v3", None),
-        Reg::R7 => ("callee_saved.v4", None),
-        Reg::R8 => ("callee_saved.v5", None),
-        Reg::R9 => ("callee_saved.v6", None),
-        Reg::R10 => ("callee_saved.v7", None),
-        Reg::R11 => ("callee_saved.v8", None),
-    };
-    let addresses = core
-        .get_start_symbols("_kernel", Some("zephyr"))
-        .unwrap_or_default();
-    macro_rules! or_continue {
-        ($q:expr) => {
-            if let Some(r) = $q {
-                r
-            } else {
-                continue;
-            }
+    let zthreads = core.query(&ZTHREADS.parse().unwrap());
+    if let Ok(threads) = zthreads {
+        let z_reg_queries = maplit::btreemap! {
+            Reg::Pc => (".arch.mode".parse().unwrap(), Some(Box::new(|m| 0xffffff00u32 | m >> 8))),
+            Reg::PspNs => (".callee_saved.psp".parse().unwrap(), None),
+            Reg::R4 => (".callee_saved.v1".parse().unwrap(), None),
+            Reg::R5 => (".callee_saved.v2".parse().unwrap(), None),
+            Reg::R6 => (".callee_saved.v3".parse().unwrap(), None),
+            Reg::R7 => (".callee_saved.v4".parse().unwrap(), None),
+            Reg::R8 => (".callee_saved.v5".parse().unwrap(), None),
+            Reg::R9 => (".callee_saved.v6".parse().unwrap(), None),
+            Reg::R10 => (".callee_saved.v7".parse().unwrap(), None),
+            Reg::R11 => (".callee_saved.v8".parse().unwrap(), None),
         };
-    }
-    for (addr, typ) in addresses.into_iter() {
-        let (thread_addrs, thread_typ) =
-            or_continue!(core.query(THREAD_QUERY.split("."), single_set(addr), typ));
-        for threadaddr in thread_addrs {
-            if let Some(regs) = core.fill_registers((threadaddr, thread_typ), &z_reg_queries) {
-                let name = match core
-                    .query("name".split("."), single_set(threadaddr), thread_typ)
-                    .and_then(|(n, nt)| core.symbol_value(nt, n.into_iter().nth(0).unwrap()))
-                {
-                    Some(ExtractedSymbol {
-                        val: SymVal::CString(s, _),
-                        ..
-                    }) => s,
-                    _ => format!("{:08x}", threadaddr),
-                };
-                println!(
-                    "Thread {}::{}",
-                    core.pack.eid_to_name(thread_typ.eid).unwrap(),
-                    name,
-                );
-                let mut bt = core.backtrace(regs);
-                bt.print_regs(args.regs);
-                if bt
-                    .frames
-                    .first()
-                    .map(|f| f.is_exception_frame())
-                    .unwrap_or(false)
-                {
-                    bt.frames.remove(0);
-                }
-                print!("{}", bt);
-            }
+        let mut names = core.filter_inner(&[".name".parse().unwrap()], threads.clone())?;
+        let regs = core.fill_registers(threads.clone(), z_reg_queries)?;
+        for (key, regset) in regs.into_iter() {
+            let mut name_thunk = || {
+                let all = names.as_mut_addrs()?;
+                let addr = all.addrs.get(&key)?;
+                let val = core.symbol_value(all.typ, *addr)?;
+                val.into_cstr()
+            };
+            let name = name_thunk().unwrap_or_else(|| format!("{:08x}", key));
+            println!("Thread zephyr::{}", name);
+            print_thread_bt(&core, regset, args.regs);
         }
     }
-    let mut tfm_reg_queries: BTreeMap<_, (_, Option<Box<dyn Fn(u32) -> u32>>)> = BTreeMap::new();
-    tfm_reg_queries.insert(Reg::Pc, ("ctx_ctrl.exc_ret", None));
-    tfm_reg_queries.insert(Reg::PspS, ("ctx_ctrl.sp", None));
-    let addresses = core
-        .get_start_symbols("partition_listhead", Some("tfm_s"))
-        .unwrap_or_default();
-    for (addr, typ) in addresses.into_iter() {
-        let (addrs, thread_typ) =
-            or_continue!(core.query("llnodes(next).*".split("."), single_set(addr), typ));
-        for threadaddr in addrs {
-            if let Some(regs) = core.fill_registers((threadaddr, thread_typ), &tfm_reg_queries) {
-                let name = match core.pack.nearest_elf_symbol(threadaddr) {
-                    Some(pack::Symbol { name, .. }) => name
-                        .trim_start_matches("tfm_")
-                        .trim_end_matches("_partition_runtime_item")
-                        .to_string(),
-                    None => format!("{:08x}", threadaddr),
-                };
-                println!(
-                    "Thread {}::{}",
-                    core.pack.eid_to_name(thread_typ.eid).unwrap(),
-                    name,
-                );
-                let mut bt = core.backtrace(regs);
-                bt.print_regs(args.regs);
-                if bt
-                    .frames
-                    .first()
-                    .map(|f| f.is_exception_frame())
-                    .unwrap_or(false)
-                {
-                    bt.frames.remove(0);
-                }
-                print!("{}", bt);
-            }
+    let t_threads = core.query(&TTHREADS.parse().unwrap());
+    if let Ok(mut threads) = t_threads {
+        let reg_queries: BTreeMap<_, (_, Option<Box<dyn Fn(u32) -> u32>>)> = maplit::btreemap! {
+            Reg::Pc => (".ctx_ctrl.exc_ret".parse().unwrap(), None),
+            Reg::PspS => (".ctx_ctrl.sp".parse().unwrap(), None),
+        };
+        let regs = core.fill_registers(threads.clone(), reg_queries)?;
+        for (key, regset) in regs.into_iter() {
+            let name = threads
+                .as_mut_addrs()
+                .and_then(|all| all.addrs.get(&key))
+                .map(|ta| tfm_thread_name(&core, *ta))
+                .unwrap_or_else(|| Cow::Owned(format!("{:08}", key)));
+            println!("Thread tfm_s::{}", name);
+            print_thread_bt(&core, regset, args.regs);
         }
     }
     Ok(())

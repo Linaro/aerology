@@ -159,6 +159,21 @@ impl Filter {
     }
 }
 
+impl FromStr for Filter {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Self> {
+        let pairs = QueryParser::parse(Rule::filter, s)?;
+        let mut filter = None;
+        for pair in pairs {
+            for p in pair.into_inner() {
+                filter = Some(Self::from_pair(p));
+            }
+        }
+        let filter = filter.unwrap();
+        Ok(filter)
+    }
+}
+
 #[derive(Debug)]
 pub struct Query {
     pub global: Global,
@@ -182,14 +197,4 @@ impl FromStr for Query {
         let global = global.unwrap();
         Ok(Self { global, filters })
     }
-}
-
-#[test]
-fn test() {
-    panic!(
-        "{:#?}",
-        "foo::bar.baz[].biff | .foo[7563203]"
-            .parse::<Query>()
-            .unwrap()
-    );
 }
