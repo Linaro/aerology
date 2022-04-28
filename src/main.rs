@@ -116,14 +116,17 @@ enum Command {
     /// Print the dts within a package
     Dts(DtsArgs),
     /// Print the config within a package
+    #[clap(alias = "cfg")]
     Config(DtsArgs),
     /// Visualize the segments of a zephyr build
     Segments(SegmentsArgs),
     /// Visualize the stacks of a core dump
     Stacks(DtsArgs),
     /// Print a backtrace for all threads
+    #[clap(alias = "bt")]
     Backtrace(BtArgs),
     /// Decode exception info, if any
+    #[clap(alias = "fault")]
     DecodeException(BtArgs),
     /// Disassemble functions from all packaged binaries
     Disassemble(DisArgs),
