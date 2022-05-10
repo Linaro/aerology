@@ -1,0 +1,904 @@
+<!DOCTYPE HTML>
+<html lang="en" class="sidebar-visible no-js light">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>The Aerology Debugger</title>
+        <meta name="robots" content="noindex" />
+        <!-- Custom HTML head -->
+        <meta content="text/html; charset=utf-8" http-equiv="Content-Type">
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff" />
+
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
+        <!-- Fonts -->
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+    </head>
+    <body>
+        <!-- Provide site root to javascript -->
+        <script type="text/javascript">
+            var path_to_root = "";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script type="text/javascript">
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script type="text/javascript">
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            var html = document.querySelector('html');
+            html.classList.remove('no-js')
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add('js');
+        </script>
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script type="text/javascript">
+            var html = document.querySelector('html');
+            var sidebar = 'hidden';
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            }
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <div class="sidebar-scrollbox">
+                <ol class="chapter"><li class="chapter-item expanded "><a href="chapter_1.html"><strong aria-hidden="true">1.</strong> Introduction</a></li><li class="chapter-item expanded "><a href="installation.html"><strong aria-hidden="true">2.</strong> Installation</a></li><li class="chapter-item expanded "><a href="prep.html"><strong aria-hidden="true">3.</strong> Debugging Prep</a></li><li class="chapter-item expanded "><a href="conf-seg-dts.html"><strong aria-hidden="true">4.</strong> Config, Segments, Device Tree</a></li><li class="chapter-item expanded "><a href="stacks.html"><strong aria-hidden="true">5.</strong> Stacks</a></li><li class="chapter-item expanded "><a href="queries.html"><strong aria-hidden="true">6.</strong> Queries</a></li></ol>
+            </div>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle"></div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky bordered">
+                    <div class="left-buttons">
+                        <button id="sidebar-toggle" class="icon-button" type="button" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </button>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light (default)</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">The Aerology Debugger</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script type="text/javascript">
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
+<p>Aerology is a special purpose debugger for inspecting snapshots of
+Zephyr and TFM Applications.</p>
+<p>At the time of writing it is able to provide convinient access to:</p>
+<ul>
+<li>memory layout, with the <code>segments</code> subcommand</li>
+<li>Zephyr DTS, with the <code>dts</code> subcommand</li>
+<li>Zephyr Config, with the <code>command</code> subcommand</li>
+<li>stack usage by thread, with the <code>stacks</code> subcommand</li>
+<li>backtraces by thread, with the <code>backtrace</code> subcommand</li>
+<li>and general purpose queries beginning with global variables, with the <code>query</code> subcommand</li>
+</ul>
+<p>This book in structured as a case study of a particular bug, and will assume
+familiarity with both Zephyr and TF-M, where appropriate.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
+<p>Aerology is written in Rust, and uses the capstone library for disassembly.
+Since capstone is written in C++, you will need to ensure that you have a
+suitable compiler instaled.</p>
+<p>If a recent version of Rust in not provided by your OS or it's package
+manager you may find <a href="https://rustup.rs">rustup.rs</a> helpful.</p>
+<p>Like many Rust applications, Aerology is built with Rust's build tool and
+package manager Cargo.
+Installation is also handled by Cargo, and </p>
+<pre><code class="language-bash">$ cargo install --path .
+</code></pre>
+<p>should be sufficient to install Aerology.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="debugging-prep"><a class="header" href="#debugging-prep">Debugging Prep</a></h1>
+<p>Aerology's debugging subcommands operate primarily on an application snapshot,
+called a core, and provides a means of dumping a core.</p>
+<p>At the moment, Taking a core is a two step process. If this is found
+to be too comberson, it may be changed.</p>
+<p>Aerology builds a single-file application package, called a Zephyr App
+Package or ZAP for short, from a Zephyr build directory.
+Aerology takes snapshots using this ZAP.
+Some subcommands, such as <code>segments</code>, can work with both a zap and a core.</p>
+<h2 id="packing-a-zap"><a class="header" href="#packing-a-zap">Packing a ZAP</a></h2>
+<p>Aerology builds a ZAP with the <code>pack</code> subcommand.
+This subcommand requires a build directory and also accepts an optional zap file
+name.
+The usage is:</p>
+<pre><code>aerology pack &lt;BUILD_DIRECTORY&gt; [OUT_FILE]
+</code></pre>
+<p>For example, I could package my version of the <code>net/dhcpv4_client</code> sample built
+for the <code>lpcxpresso55s69_ns</code> platform with the following command:</p>
+<pre><code class="language-bash"># Verify that this is indeed a zephyr build directory
+$ ls build/lpcxpresso55s69_ns/net/dhcpv4_client/
+app                  compile_commands.json  tfm_s_signed.hex
+build.ninja          Kconfig                zephyr
+cmake_install.cmake  modules                zephyr_modules.txt
+CMakeCache.txt       tfm                    zephyr_ns_signed.hex
+CMakeFiles           tfm_merged.hex         zephyr_settings.txt
+# Package the build directory
+$ aerology pack build/lpcxpresso55s69_ns/net/dhcpv4_client/
+packed into &quot;dhcpv4_client.zap&quot;
+</code></pre>
+<p>As may be evedent from the above shell session, when no output file is specified,
+Aerology infers a name from the last component of the build directory.</p>
+<p>We can test that this is a working zap by running the <code>segments</code> subcommand.
+Don't worry about what the output looks like for now, as we'll cover that in
+another chapter.
+What we're looking for is a lack of errors:</p>
+<pre><code class="language-bash">$ aerology segments -s dhcpv4_client.zap
+Note: Not to scale.
+Key: r = readable, w = writable, x = executable, z = zeroed on startup
+     ┃ = overlapping section
+           zephyr      tfm_s        bl2
+300274e0┌──────────┐
+        │       rwz│
+300222a0└──────────┘
+3002229c┌──────────┐
+        │        rw│
+30022000└──────────┘
+3000ce64            ┌──────────┐
+                    │       rwz│
+3000b5fc            ┢━━━━━━━━━━┪
+                    ┃        rw┃
+3000b500            ┡━━━━━━━━━━┩
+30007d60            │          │┌──────────┐
+                    │          ││       rwz│
+30005560            │          │└──────────┘
+30005558            │          │┌──────────┐
+                    │          ││        rw│
+30002640            ┢━━━━━━━━━━┪│          │
+                    ┃        rw┃│          │
+300025c0            ┡━━━━━━━━━━┩│          │
+30000840            ┢━━━━━━━━━━┪│          │
+                    ┃        rw┃│          │
+30000820            ┡━━━━━━━━━━┩│          │
+30000400            │          │├──────────┤
+                    │          ││       rwz│
+30000000            └──────────┘└──────────┘
+10044024┌──────────┐
+        │       rwx│
+10030000└──────────┘
+1001df20            ┌──────────┐
+                    │        rx│
+100113e0            └──────────┘
+1001133c            ┌──────────┐
+                    │       rwx│
+100060fc            │          │┌──────────┐
+                    │          ││       rwx│
+10000000            └──────────┘└──────────┘
+</code></pre>
+<p>No errors, so it looks like our ZAP is fine.</p>
+<h2 id="dumping-a-core"><a class="header" href="#dumping-a-core">Dumping a Core</a></h2>
+<p>Now that we have a working ZAP, we can use it to dump a core.
+Aerology exposes the <code>dump</code> subcommand to dump a core using the information
+in a ZAP.</p>
+<p>The usage f the dump command is:</p>
+<pre><code class="language-bash">aerology dump &lt;ZAP_FILE&gt; [CORE_FILE]
+</code></pre>
+<p>Similar to the <code>pack</code> subcommand, the output file argument is optional, and
+it will infer a name based on the ZAP passed as the first argument.
+Also similar to <code>pack</code>, there is very little output.</p>
+<pre><code class="language-bash">$ aerology dump dhcpv4_client.zap
+Wrote core dump to &quot;dhcpv4_client.core.0&quot;
+</code></pre>
+<p>The core dump that Aerology wrote is self-contained, and can be transfered
+across machines with different archetectures and operating systems without
+losing any context or having an different behavior.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="config-segments-device-tree"><a class="header" href="#config-segments-device-tree">Config, Segments, Device Tree</a></h1>
+<p>Aerology stores the Zephyr Config and Device Tree in both ZAPs and cores.
+These files are accessable with a few subcommands.</p>
+<h2 id="config-the-config-subcommand"><a class="header" href="#config-the-config-subcommand">Config, the <code>config</code> subcommand</a></h2>
+<p>The <code>config</code> subcommand dumps the Kconfig that was used for the build of
+Zephyr in the ZAP or core.</p>
+<p>For example:</p>
+<pre><code class="language-bash">$ aerology config dhcpv4_client.zap
+--- Lots of config output ---
+#
+# Boot Options
+#
+# CONFIG_IS_BOOTLOADER is not set
+# CONFIG_BOOTLOADER_MCUBOOT is not set
+# CONFIG_BOOTLOADER_BOSSA is not set
+# end of Boot Options
+
+#
+# Compatibility
+#
+CONFIG_COMPAT_INCLUDES=y
+# end of Compatibility
+</code></pre>
+<p>Further, the config may be queried from a core dump as well.
+If the core dump and the ZAP have been built from the same build of
+Zephyr, their configs will be the same.</p>
+<pre><code class="language-bash">$ diff &lt;(aerology config dhcpv4_client.zap) &lt;(aerology config dhcpv4_client.core.0)
+--- No Output ---
+</code></pre>
+<h2 id="device-tree-the-dts-subcommand"><a class="header" href="#device-tree-the-dts-subcommand">Device Tree, the <code>dts</code> subcommand</a></h2>
+<p>Similar to the <code>config</code> subcommand, the <code>dts</code> subcommand dumps the device
+tree source used in the build.</p>
+<p>For example:</p>
+<pre><code>$ aerology dts dhcpv4_client.core.0
+--- Lots of DTS output ---
+        reserved-memory {
+                #address-cells = &lt; 0x1 &gt;;
+                #size-cells = &lt; 0x1 &gt;;
+                ranges;
+                code: memory@01060000 {
+                        reg = &lt; 0x1060000 0x60000 &gt;;
+                };
+                ram: memory@21000000 {
+                        reg = &lt; 0x21000000 0x200000 &gt;;
+                };
+        };
+};
+</code></pre>
+<p>As with the <code>config</code> subcommand, the <code>dts</code> subcommand works on both ZAPs
+and cores.</p>
+<h2 id="memory-layout-the-segments-subcommand"><a class="header" href="#memory-layout-the-segments-subcommand">Memory Layout, the <code>segments</code> subcommand</a></h2>
+<p>The memory layout of a Zephyr (and TFM) application can be visually inspected
+with the <code>segments</code> subcommand:</p>
+<pre><code class="language-bash">$ aerology segments --summary dhcpv4_client.core.0
+Note: Not to scale.
+Key: r = readable, w = writable, x = executable, z = zeroed on startup
+     ┃ = overlapping section
+           zephyr      tfm_s        bl2
+31007928┌──────────┐
+        │       rwz│
+31000418└──────────┘
+31000414┌──────────┐
+        │        rw│
+31000000└──────────┘
+3000ff70            ┌──────────┐
+                    │       rwz│
+3000bf38            ┢━━━━━━━━━━┪
+                    ┃        rw┃
+3000bbc0            ┡━━━━━━━━━━┩
+30005f40            │          │┌──────────┐
+                    │          ││        rw│
+30003ac0            ┢━━━━━━━━━━┪│          │
+                    ┃        rw┃│          │
+30003a80            ┡━━━━━━━━━━┩│          │
+30002020            ┢━━━━━━━━━━┪│          │
+                    ┃        rw┃│          │
+30002000            ┡━━━━━━━━━━┩│          │
+30000400            │          │├──────────┤
+                    │          ││       rwz│
+30000000            └──────────┘└──────────┘
+11076384┌──────────┐
+        │       rwx│
+11060000└──────────┘
+1105f500            ┌──────────┐
+                    │        rx│
+1105f4c0            └──────────┘
+11021280            ┌──────────┐
+                    │        rx│
+11009fe0            └──────────┘
+11009f68            ┌──────────┐
+                    │       rwx│
+11000000            └──────────┘
+100055e0                        ┌──────────┐
+                                │       rwx│
+10000000                        └──────────┘
+</code></pre>
+<p>The above shows the <code>--summary</code> output, because the unsummarized output is
+quite long.</p>
+<p>Without summary it looks like:</p>
+<pre><code>$ aerology segments dhcpv4_client.core.0
+Note: Not to scale.
+Key: r = readable, w = writable, x = executable, z = zeroed on startup
+     ┃ = overlapping section
+                     zephyr                          tfm_s                            bl2
+31007928┌──────────────────────────────┐                                   
+        │noinit                     rwz│                                   
+31002020├──────────────────────────────┤                                   
+        │bss                        rwz│                                   
+31000418└──────────────────────────────┘                                   
+31000414┌──────────────────────────────┐                                   
+        │net_l2_area                  r│                                   
+31000404├──────────────────────────────┤                                   
+        │net_if_dev_area             rw│                                   
+310003e8├──────────────────────────────┤                                   
+        │net_if_area                 rw│                                   
+310003a8└──────────────────────────────┘                                   
+310003a4┌──────────────────────────────┐                                   
+        │_net_buf_pool_area          rw│                                   
+3100034c├──────────────────────────────┤                                   
+        │k_sem_area                  rw│                                   
+310002ec├──────────────────────────────┤                                   
+        │k_msgq_area                 rw│                                   
+310002bc├──────────────────────────────┤                                   
+        │k_mutex_area                rw│                                   
+3100026c├──────────────────────────────┤                                   
+        │k_mem_slab_area             rw│                                   
+31000234├──────────────────────────────┤                                   
+        │log_dynamic_sections        rw│                                   
+310001d0├──────────────────────────────┤                                   
+        │device_states               rw│                                   
+31000188└──────────────────────────────┘                                   
+31000187┌──────────────────────────────┐                                   
+        │datas                       rw│                                   
+31000000└──────────────────────────────┘                                   
+3000ff70                                ┌──────────────────────────────┐   
+                                        │.TFM_BSS                   rwz│   
+3000bf40                                └──────────────────────────────┘   
+3000bf38                                ┌──────────────────────────────┐   
+                                        │.TFM_DATA                   rw│   
+3000bbc0                                ├──────────────────────────────┤   
+                                        │.TFM_PSA_ROT_LINKER_BSS    rwz│   
+30005f40                                │                              │┌──────────────────────────────┐
+                                        │                              ││.heap                      rwz│
+30004f40                                │                              │├──────────────────────────────┤
+                                        │                              ││.msp_stack                 rwz│
+30003ac0                                ├──────────────────────────────┤│                              │
+                                        │.TFM_PSA_ROT_LINKER_DATA    rw││                              │
+30003a80                                ├──────────────────────────────┤│                              │
+                                        │.TFM_APP_ROT_LINKER_BSS    rwz││                              │
+30003740                                │                              │└──────────────────────────────┘
+30003728                                │                              │┌──────────────────────────────┐
+                                        │                              ││.bss                       rwz│
+30002020                                ├──────────────────────────────┤│                              │
+                                        │.TFM_APP_ROT_LINKER_DATA    rw││                              │
+30002000                                ├──────────────────────────────┤│                              │
+                                        │.heap                      rwz││                              │
+30001000                                ├──────────────────────────────┤│                              │
+                                        │.psp_stack                 rwz││                              │
+30000800                                ├──────────────────────────────┤│                              │
+                                        │.msp_stack                 rwz││                              │
+30000494                                │                              │├──────────────────────────────┤
+                                        │                              ││.data                       rw│
+30000400                                ├──────────────────────────────┤├──────────────────────────────┤
+                                        │.tfm_bl2_shared_data       rwz││.tfm_bl2_shared_data       rwz│
+30000000                                └──────────────────────────────┘└──────────────────────────────┘
+11076384┌──────────────────────────────┐                                   
+        │rodata                       r│                                   
+11071bfc├──────────────────────────────┤                                   
+        │device_handles               r│                                   
+11071b90├──────────────────────────────┤                                   
+        │shell_root_cmds_sections     r│                                   
+11071b38├──────────────────────────────┤                                   
+        │shell_area                   r│                                   
+11071b08├──────────────────────────────┤                                   
+        │log_backends_sections        r│                                   
+11071af8├──────────────────────────────┤                                   
+        │log_const_sections           r│                                   
+11071a30├──────────────────────────────┤                                   
+        │sw_isr_table                rw│                                   
+11071630├──────────────────────────────┤                                   
+        │devices                      r│                                   
+11071480├──────────────────────────────┤                                   
+        │initlevel                    r│                                   
+110713a0├──────────────────────────────┤                                   
+        │.ARM.exidx                   r│                                   
+11071398├──────────────────────────────┤                                   
+        │text                        rx│                                   
+11060640├──────────────────────────────┤                                   
+        │rom_start                  rwx│                                   
+11060000└──────────────────────────────┘                                   
+1105f500                                ┌──────────────────────────────┐   
+                                        │.gnu.sgstubs                rx│   
+1105f4c0                                └──────────────────────────────┘   
+11021280                                ┌──────────────────────────────┐   
+                                        │.ARM.exidx                   r│   
+11021278                                ├──────────────────────────────┤   
+                                        │.psa_interface_thread_call  rx│   
+11021180                                ├──────────────────────────────┤   
+                                        │.TFM_UNPRIV_CODE            rx│   
+11009fe0                                └──────────────────────────────┘   
+11009f68                                ┌──────────────────────────────┐   
+                                        │.ER_TFM_CODE                rx│   
+110056c0                                ├──────────────────────────────┤   
+                                        │.TFM_APP_ROT_LINKER         rx│   
+11004940                                ├──────────────────────────────┤   
+                                        │.TFM_PSA_ROT_LINKER         rx│   
+11000f40                                └──────────────────────────────┘   
+11000f24                                ┌──────────────────────────────┐   
+                                        │.TFM_SP_LOAD_LIST            r│   
+11000d34                                ├──────────────────────────────┤   
+                                        │.zero.table                 rw│   
+11000d1c                                ├──────────────────────────────┤   
+                                        │.copy.table                 rw│   
+11000cf8                                ├──────────────────────────────┤   
+                                        │.TFM_VECTORS                rx│   
+11000400                                └──────────────────────────────┘   
+100055e0                                                                ┌──────────────────────────────┐
+                                                                        │.zero.table                 rw│
+100055d0                                                                ├──────────────────────────────┤
+                                                                        │.copy.table                 rw│
+100055b8                                                                ├──────────────────────────────┤
+                                                                        │.ARM.exidx                   r│
+100055b0                                                                ├──────────────────────────────┤
+                                                                        │.text                       rx│
+10000000                                                                └──────────────────────────────┘
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="stacks"><a class="header" href="#stacks">Stacks</a></h1>
+<p>Aerology currently supports 2 subcommands that help with looking through
+stacks: <code>stacks</code> for a summary of the filled-level of all thread stacks
+Aerology can find, and <code>backtrace</code> for backtracing all stacks in the system.</p>
+<h2 id="stacks-subcommand"><a class="header" href="#stacks-subcommand"><code>stacks</code> subcommand</a></h2>
+<p>The stacks subcommand renders a pretty version of stack usage in a table format:</p>
+<pre><code class="language-bash">$ aerology stacks dhcpv4_client.core.0
+Key: █: currently in use ▒: used in the past ░: never used
+name                 used    max   size
+zephyr::logging       32b    32b   768b ░░░
+zephyr::shell_uart    32b    32b  2048b ░░░░░░░░
+zephyr::idle 00       32b    32b   320b ░
+zephyr::main          88b   216b  1024b ░░░░
+tfm_s::3000bf40      312b  2440b  8192b █▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░░░░░░░░░░░░░
+tfm_s::3000bf88      192b   192b  2688b ░░░░░░░░░░░
+tfm_s::3000bfd0      168b   776b  2048b ▒▒▒░░░░░
+tfm_s::3000c018      176b   644b  1664b ▒▒░░░░░
+tfm_s::3000c060      120b   256b  1280b ▒░░░░
+tfm_s::3000c0a8       72b   300b  1024b ▒░░░
+tfm_s::3000c0f0       72b    20b   256b ░
+</code></pre>
+<p>This might be helpful for determining the maximum stack usage of a given
+thread, for example.</p>
+<h2 id="backtrace-subcommand"><a class="header" href="#backtrace-subcommand"><code>backtrace</code> subcommand</a></h2>
+<p>The backtrace subcommand is where Aerology really shines; it backtraces all
+threads in the system including stacks of TFM partitions:</p>
+<pre><code class="language-bash">$ aerology backtrace dhcpv4_client.core.0
+Registers
+  ├─ 11008a60 in tfm_access_violation_handler
+  ╞═ Exception Handler Called
+  ├─ 01069bfc in smsc_init
+  ├─ 01069ce3 in eth_init
+  ├─ 01069fe5 in z_sys_init_run_level
+  ├─ 0106a1af in bg_thread_main
+  ├─ 0106bae1 in z_thread_entry
+  └─ 010645e3 in arch_switch_to_main_thread
+Thread zephyr::idle 00
+  ├─ 0106bad4 in z_thread_entry
+  └─ aaaaaaaa in &lt;unknown&gt;
+Thread zephyr::logging
+  ├─ 0106bad4 in z_thread_entry
+  └─ aaaaaaaa in &lt;unknown&gt;
+Thread zephyr::main
+  ├─ 010644f8 in arch_swap
+  ├─ 0106b8dd in k_sys_work_q_init
+  ├─ 01069fe5 in z_sys_init_run_level
+  ├─ 0106a1af in bg_thread_main
+  ├─ 0106bae1 in z_thread_entry
+  └─ 010645e3 in arch_switch_to_main_thread
+Thread zephyr::shell_uart
+  ├─ 0106bad4 in z_thread_entry
+  └─ aaaaaaaa in &lt;unknown&gt;
+Thread tfm_s::sp_crypto
+  ├─ 11008e70 in tfm_arch_trigger_pendsv
+  ├─ 11007ee3 in spm_interface_thread_dispatcher
+  └─ 11021187 in psa_interface_unified_abi
+Thread tfm_s::sp_initial_attestation
+  ├─ 11008e70 in tfm_arch_trigger_pendsv
+  ├─ 11007ee3 in spm_interface_thread_dispatcher
+  └─ 11021187 in psa_interface_unified_abi
+Thread tfm_s::sp_ps
+  ├─ 11008e70 in tfm_arch_trigger_pendsv
+  ├─ 11007ee3 in spm_interface_thread_dispatcher
+  └─ 11021187 in psa_interface_unified_abi
+Thread tfm_s::sp_its
+  ├─ 11008e70 in tfm_arch_trigger_pendsv
+  ├─ 11007ee3 in spm_interface_thread_dispatcher
+  └─ 11021187 in psa_interface_unified_abi
+Thread tfm_s::sp_platform
+  ├─ 11008e70 in tfm_arch_trigger_pendsv
+  ├─ 11007ee3 in spm_interface_thread_dispatcher
+  └─ 11021187 in psa_interface_unified_abi
+Thread tfm_s::sp_ns_agent
+  └─ 11008c85 in tfm_nspm_thread_entry
+Thread tfm_s::idle
+  └─ 11008ca5 in tfm_idle_thread
+</code></pre>
+<p>Optionally, you can have Aerology dump the registers at each stack frame with
+the <code>--regs</code>.
+The following in an excert from the same backtrace with <code>-r</code> applied:</p>
+<pre><code>Thread zephyr::main
+  ├─ 010644f8 in arch_swap
+  │  R0  00000000 R1  01071470 R2  01071618 R3  01069ce3
+  │  R4  00000000 R5  00000000 R6  01071480 R7  0106a1a1
+  │  R8  01064cd8 R9  01064cd8 R10 01064cd8 R11 01064cd8
+  │  R12 00000000 Sp  210037c8 Lr  0106b8dd Pc  010644f8
+  │  Psr 61000000
+  ├─ 0106b8dd in k_sys_work_q_init
+  │  R0  00000000 R1  01071470 R2  01071618 R3  01069ce3
+  │  R4  01071470 R5  00000000 R6  01071480 R7  0106a1a1
+  │  R8  01064cd8 R9  01064cd8 R10 01064cd8 R11 01064cd8
+  │  R12 00000000 Sp  210037e0 Lr  01069fe5 Pc  0106b8dd
+  │  Psr 61000000
+  ├─ 01069fe5 in z_sys_init_run_level
+  │  R0  00000000 R1  01071470 R2  01071618 R3  01069ce3
+  │  R4  0106a1a1 R5  21000e98 R6  21003800 R7  0106a1a1
+  │  R8  01064cd8 R9  01064cd8 R10 01064cd8 R11 01064cd8
+  │  R12 00000000 Sp  210037f0 Lr  0106a1af Pc  01069fe5
+  │  Psr 61000000
+  ├─ 0106a1af in bg_thread_main
+  │  R0  00000000 R1  01071470 R2  01071618 R3  00000000
+  │  R4  0106a1a1 R5  21000e98 R6  21003800 R7  0106a1a1
+  │  R8  01064cd8 R9  01064cd8 R10 01064cd8 R11 01064cd8
+  │  R12 00000000 Sp  210037f8 Lr  0106bae1 Pc  0106a1af
+  │  Psr 61000000
+  ├─ 0106bae1 in z_thread_entry
+  │  R0  00000000 R1  01071470 R2  01071618 R3  00000000
+  │  R4  0106a1a1 R5  21000e98 R6  21003800 R7  0106a1a1
+  │  R8  01064cd8 R9  01064cd8 R10 01064cd8 R11 01064cd8
+  │  R12 00000000 Sp  21003800 Lr  010645e3 Pc  0106bae1
+  │  Psr 61000000
+  └─ 010645e3 in arch_switch_to_main_thread
+     R0  00000000 R1  01071470 R2  01071618 R3  00000000
+     R4  0106a1a1 R5  21000e98 R6  21003800 R7  0106a1a1
+     R8  01064cd8 R9  01064cd8 R10 01064cd8 R11 01064cd8
+     R12 00000000 Sp  21003800 Lr  010645e3 Pc  010645e3
+     Psr 61000000
+</code></pre>
+<p>Since each stack frame takes up 6 lines instead of 1, all of the backtraces
+together becomes quite long.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="queries"><a class="header" href="#queries">Queries</a></h1>
+<p>Aerology's <code>query</code> subcommand is easily it's most general purpse tool.
+It provides a means to inspect arbitrary objects (e.g. structs, unions, etc.)
+in a C-style fromat or a hexdump.</p>
+<h2 id="syntax"><a class="header" href="#syntax">Syntax</a></h2>
+<p>The syntax of a query is inspired by <code>jq</code>, and many of the operators are postfix.
+An Aerology query is structured as a global, with optional postfix operators,
+followed by zero or more <code>=&gt;</code> separated &quot;filters&quot;.</p>
+<h3 id="global"><a class="header" href="#global">Global</a></h3>
+<p>Unlike <code>jq</code>, the initial value is provided by global optionally prefixed with a
+executable namespace.
+For example, to get the zephyr kernel struct, either of the following queries
+produce the same result:</p>
+<pre><code>_kernel
+</code></pre>
+<pre><code>zephyr::kernel
+</code></pre>
+<p>Executing a query with just the global prints the whole structure C-style:</p>
+<pre><code class="language-bash">$ aerology query dhcpv4_client.core.0 zephyr::_kernel
+21001ec0: (struct z_kernel) {
+    .cpus = {
+        (struct _cpu) {
+            .nested = (uint32_t) 0 /*0x0*/,
+            .irq_stack = (char *) 553664832 /*0x21004140*/,
+            .current = (struct k_thread *) 553651864 /*0x21000e98*/,
+            .idle_thread = (struct k_thread *) 553651680 /*0x21000de0*/,
+            .slice_ticks = (int) 0,
+            .id = (uint8_t) 0 /*0x0*/,
+            /* .arch is Missing */
+        },
+    },
+    .ready_q = (struct _ready_q) {
+        .cache = (struct k_thread *) 553651864 /*0x21000e98*/,
+        .runq = (sys_dlist_t) {
+            .head = (struct _dnode *) 553651864 /*0x21000e98*/,
+            .next = (struct _dnode *) 553651864 /*0x21000e98*/,
+            .tail = (struct _dnode *) 553650440 /*0x21000908*/,
+            .prev = (struct _dnode *) 553650440 /*0x21000908*/,
+        },
+    },
+    .threads = (struct k_thread *) 553652056 /*0x21000f58*/,
+}
+</code></pre>
+<h3 id="postfix-operators"><a class="header" href="#postfix-operators">Postfix Operators</a></h3>
+<p>Once a global is selected, you may follow members with postfix operators.
+All postfix operators expect a type class (struct, array, pointer, etc.), and
+will error when the type at that step of the query is of a different class.</p>
+<p>The operators are:</p>
+<ul>
+<li><code>.&lt;struct-member&gt;</code> to traverse a struct into a member named
+&quot;struct-member&quot;. This will derefrence pointers to structures
+before atempting to move to a member if the current type is a 
+pointer to a structure. This will error when the struct does
+not contain the required member.</li>
+<li><code>[&lt;number&gt;]</code> will select array member with index &quot;number&quot;. Similar
+to the struct member operation, this will dereference pointers to
+arrays before atempting to select the member. This will error if
+the index is out of bounds, or the array has no size.</li>
+<li><code>[]</code> will select all array members, treating the remainder of the
+query as a query over all members of the array. This will error if
+the array has no size.</li>
+<li><code>.*</code> postfix derefrence operator. This will derefrence a pointer.</li>
+</ul>
+<h4 id="struct-member"><a class="header" href="#struct-member">Struct Member</a></h4>
+<p>Continuing with the Zephyr kernel structure, we may select the head of the
+threads linked list as follows:</p>
+<pre><code class="language-bash">$ aerology query dhcpv4_client.core.0  zephyr::_kernel.threads
+21001ee4: (struct k_thread *) 553652056 /*0x21000f58*/
+</code></pre>
+<p>If we were to have a typo, we would get an error such as:</p>
+<pre><code class="language-bash">$ aerology query dhcpv4_client.core.0  zephyr::_kernel.thread
+Error:
+  × member not found &quot;thread&quot;
+   ┌─[command-line:1:1]
+ 1 │ zephyr::_kernel.thread
+   ·                 ───┬──
+   ·                    └── missing
+   └────
+  help: consider replacing with &quot;cpus&quot;, &quot;ready_q&quot; or &quot;threads&quot; instead
+</code></pre>
+<p>If we try to select a member of something that's not a struct, such as the cpu
+array, we get a type error such as:</p>
+<pre><code class="language-bash">$ aerology query dhcpv4_client.core.0  zephyr::_kernel.cpus.nested
+Error:
+  × type mismatch
+   ┌─[command-line:1:1]
+ 1 │ zephyr::_kernel.cpus.nested
+   ·                      ───┬──
+   ·                         └── expected struct or union found struct _cpu[1]
+   └────
+</code></pre>
+<p>Members may be selected through poiters to structures, without an intevening 
+dereference operator. 
+For exmple, if we wanted to select the <code>arch</code> member of the thread struct at
+the head of the threads linked list, we may use the following query:</p>
+<pre><code class="language-bash">$ aerology query dhcpv4_client.core.0  zephyr::_kernel.threads
+21001ee4: (struct k_thread *) 553652056 /*0x21000f58*/
+$ aerology query dhcpv4_client.core.0  zephyr::_kernel.threads.arch
+21001004: (struct _thread_arch) {
+    .basepri = (uint32_t) 0 /*0x0*/,
+    .swap_return_value = (uint32_t) 4294967285 /*0xfffffff5*/,
+    .mode = (uint32_t) 48128 /*0xbc00*/,
+    .mode_bits = (uint8_t) 0 /*0x0*/,
+    .mode_exc_return = (uint8_t) 188 /*0xbc*/,
+    .mode_reserved2 = (uint16_t) 0 /*0x0*/,
+}
+</code></pre>
+<p>Note that above the type of <code>zephyr::_kernel.threads</code> is a <code>struct k_thread *</code>,
+but we used it as if it were a <code>struct k_thread</code>.</p>
+<h3 id="array-index"><a class="header" href="#array-index">Array Index</a></h3>
+<p>Selecting an index in an array works similar to selecting a struct member.
+For example if we wanted to select the first entry (index 0) of the Zephyr
+kernel's cpu array we may:</p>
+<pre><code>$ aerology query dhcpv4_client.core.0  zephyr::_kernel.cpus[0]
+21001ec0: (struct _cpu) {
+    .nested = (uint32_t) 0 /*0x0*/,
+    .irq_stack = (char *) 553664832 /*0x21004140*/,
+    .current = (struct k_thread *) 553651864 /*0x21000e98*/,
+    .idle_thread = (struct k_thread *) 553651680 /*0x21000de0*/,
+    .slice_ticks = (int) 0,
+    .id = (uint8_t) 0 /*0x0*/,
+    /* .arch is Missing */
+}
+</code></pre>
+<p>However, if we index past the end of the array, we get an error:</p>
+<pre><code>$ aerology query dhcpv4_client.core.0  zephyr::_kernel.cpus[11110]
+Error:
+  × Array index out of bounds
+   ┌─[command-line:1:1]
+ 1 │ zephyr::_kernel.cpus[11110]
+   ·                     ───────
+   └────
+  help: This array has a size of 1
+</code></pre>
+<p>Further if we try to index something other than an array, we get a type error
+such as:</p>
+<pre><code>$ aerology query dhcpv4_client.core.0  zephyr::_kernel[6]
+Error:
+  × type mismatch
+   ┌─[command-line:1:1]
+ 1 │ zephyr::_kernel[6]
+   ·                ─┬─
+   ·                 └── expected array found struct z_kernel
+   └────
+</code></pre>
+<h3 id="whole-array"><a class="header" href="#whole-array">Whole Array</a></h3>
+<p>You may select a whole array by omitting an array index. For example, we may
+print the value of the char array that makes up a thread's name with the query:</p>
+<pre><code class="language-bash">$ aerology query dhcpv4_client.core.0  zephyr::_kernel.threads.name[]
+21000fd0: (char) 115 /*0x73*/
+21000fd1: (char) 121 /*0x79*/
+21000fd2: (char) 115 /*0x73*/
+21000fd3: (char) 119 /*0x77*/
+21000fd4: (char) 111 /*0x6f*/
+21000fd5: (char) 114 /*0x72*/
+21000fd6: (char) 107 /*0x6b*/
+21000fd7: (char) 113 /*0x71*/
+21000fd8: (char) 0 /*0x0*/
+21000fd9: (char) 0 /*0x0*/
+21000fda: (char) 0 /*0x0*/
+21000fdb: (char) 0 /*0x0*/
+21000fdc: (char) 0 /*0x0*/
+21000fdd: (char) 0 /*0x0*/
+21000fde: (char) 0 /*0x0*/
+21000fdf: (char) 0 /*0x0*/
+21000fe0: (char) 0 /*0x0*/
+21000fe1: (char) 0 /*0x0*/
+21000fe2: (char) 0 /*0x0*/
+21000fe3: (char) 0 /*0x0*/
+21000fe4: (char) 0 /*0x0*/
+21000fe5: (char) 0 /*0x0*/
+21000fe6: (char) 0 /*0x0*/
+21000fe7: (char) 0 /*0x0*/
+21000fe8: (char) 0 /*0x0*/
+21000fe9: (char) 0 /*0x0*/
+21000fea: (char) 0 /*0x0*/
+21000feb: (char) 0 /*0x0*/
+21000fec: (char) 0 /*0x0*/
+21000fed: (char) 0 /*0x0*/
+21000fee: (char) 0 /*0x0*/
+21000fef: (char) 0 /*0x0*/
+</code></pre>
+<p>This query is a tad silly, as aerology is capable of printing strings directly:</p>
+<pre><code class="language-bash">$ aerology query dhcpv4_client.core.0  zephyr::_kernel.threads.name
+21000fd0: (char[32]) &quot;sysworkq&quot;
+</code></pre>
+<h2 id="filters"><a class="header" href="#filters">Filters</a></h2>
+<p>At the moment, 3 filters are supported:</p>
+<ul>
+<li>Postfix operators.</li>
+<li>Reading a linked list with <code>llnodes</code></li>
+<li>Creating a bactrace with <code>bt</code></li>
+</ul>
+<h3 id="postfix-operators-1"><a class="header" href="#postfix-operators-1">Postfix operators</a></h3>
+<p>Postfix operators may be used as a filter by themselves.
+Using an example from the prior section, we may query the name of the head of
+the thread list including the filter separator <code>=&gt;</code> in a few more places.</p>
+<pre><code class="language-bash">$ aerology query dhcpv4_client.core.0  'zephyr::_kernel =&gt; .threads.name'
+21000fd0: (char[32]) &quot;sysworkq&quot;
+
+$ aerology  query dhcpv4_client.core.0  'zephyr::_kernel =&gt; .threads =&gt; .name'
+21000fd0: (char[32]) &quot;sysworkq&quot;
+
+$ aerology query dhcpv4_client.core.0  'zephyr::_kernel.threads =&gt; .name'
+o21000fd0: (char[32]) &quot;sysworkq&quot;
+</code></pre>
+<p>As may be seen in the exmaple above, these produce the same result.</p>
+<h3 id="linked-list-nodes"><a class="header" href="#linked-list-nodes">Linked List Nodes</a></h3>
+<p>An important filter in Aerology is the linked list nodes reader.
+It's invoked <code>llnodes &lt;postfix-member&gt;</code>.
+For example, to get the names of all of the threads in the system, we may
+use the following query:</p>
+<pre><code class="language-bash">$ aerology query dhcpv4_client.core.0 'zephyr::_kernel.threads =&gt; llnodes .next_thread =&gt; .name'
+21000e58: (char[32]) &quot;idle 00&quot;
+210008c8: (char[32]) &quot;logging&quot;
+21000f10: (char[32]) &quot;main&quot;
+21000980: (char[32]) &quot;shell_uart&quot;
+21000fd0: (char[32]) &quot;sysworkq&quot;
+</code></pre>
+<h3 id="backtrace"><a class="header" href="#backtrace">Backtrace</a></h3>
+<p>Another interesting Aerology filter is the backtrace filter.
+This filter has a more complex syntax:</p>
+<pre><code>bt &lt;reg-name&gt;=&lt;postfix-member&gt;
+</code></pre>
+<p>This filter backtraces after populating the initial register state as
+described by its arguments.</p>
+<p>For example, we can take a backtrace of every thread in TFM with the
+following query:</p>
+<pre><code>$ aerology query dhcpv4_client.core.0 'tfm_s::partition_listhead =&gt; llnodes .next =&gt; bt pc=.ctx_ctrl.exc_ret psp_s=.ctx_ctrl.sp'
+3000bfcc:
+  ╞═ Exception Handler Called
+  ├─ 11008e70 in tfm_arch_trigger_pendsv
+  ├─ 11007ee3 in spm_interface_thread_dispatcher
+  └─ 11021187 in psa_interface_unified_abi
+3000c014:
+  ╞═ Exception Handler Called
+  ├─ 11008e70 in tfm_arch_trigger_pendsv
+  ├─ 11007ee3 in spm_interface_thread_dispatcher
+  └─ 11021187 in psa_interface_unified_abi
+3000c05c:
+  ╞═ Exception Handler Called
+  ├─ 11008e70 in tfm_arch_trigger_pendsv
+  ├─ 11007ee3 in spm_interface_thread_dispatcher
+  └─ 11021187 in psa_interface_unified_abi
+3000c0a4:
+  ╞═ Exception Handler Called
+  ├─ 11008e70 in tfm_arch_trigger_pendsv
+  ├─ 11007ee3 in spm_interface_thread_dispatcher
+  └─ 11021187 in psa_interface_unified_abi
+3000c0ec:
+  ╞═ Exception Handler Called
+  ├─ 11008e70 in tfm_arch_trigger_pendsv
+  ├─ 11007ee3 in spm_interface_thread_dispatcher
+  └─ 11021187 in psa_interface_unified_abi
+3000c134:
+  ╞═ Exception Handler Called
+  └─ 11008c85 in tfm_nspm_thread_entry
+3000c6e4:
+  ╞═ Exception Handler Called
+  └─ 11008ca5 in tfm_idle_thread
+</code></pre>
+<blockquote>
+<p>Note: Zephyr does not store the entire exception payload, so without bitwise
+operations, we cannot construct a valid value for the pc.</p>
+</blockquote>
+<blockquote>
+<p>Note: we place the exception payload in pc, not the lr.</p>
+</blockquote>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+            </nav>
+
+        </div>
+
+        <script type="text/javascript">
+            window.playground_copyable = true;
+        </script>
+        <script src="elasticlunr.min.js" type="text/javascript" charset="utf-8"></script>
+        <script src="mark.min.js" type="text/javascript" charset="utf-8"></script>
+        <script src="searcher.js" type="text/javascript" charset="utf-8"></script>
+        <script src="clipboard.min.js" type="text/javascript" charset="utf-8"></script>
+        <script src="highlight.js" type="text/javascript" charset="utf-8"></script>
+        <script src="book.js" type="text/javascript" charset="utf-8"></script>
+
+        <!-- Custom JS scripts -->
+        <script type="text/javascript">
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+    </body>
+</html>
