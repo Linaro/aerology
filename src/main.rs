@@ -840,7 +840,7 @@ fn print_stacks(args: DtsArgs) -> Result<()> {
     if let Ok(threads) = core.query(&tfm_threads_query) {
         out.extend(tfm_stacks(&core, threads).unwrap_or_default().into_iter());
     }
-    let max_stack_size = out.iter().max_by_key(|(_n, si, _st, _p, _u)| si).unwrap().1;
+    let max_stack_size = out.iter().map(|(_n, si, _st, _p, _u)| *si).max().unwrap_or(0);
     let max_name_len = out
         .iter()
         .map(|(n, _si, _st, _p, _u)| n.len())
