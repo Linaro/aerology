@@ -51,7 +51,6 @@ impl Client {
         // We need to tell qemu that we're a real gdb and we understand how
         // the g command works
         client.sendcmd("qXfer:features:read:target.xml:0,1000")?;
-        client.sendcmd("qXfer:features:read:arm-m-profile.xml:0,1000")?;
         Ok(client)
     }
 
