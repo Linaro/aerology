@@ -531,6 +531,10 @@ impl Core {
                     let inner = get_inner!(intermediate, f)?;
                     self.linked_list_nodes(member, inner)?
                 }
+                query::Filter::Cast(cast) => {
+                    let inner = get_inner!(intermediate, f)?;
+                    self.step_cast(cast, inner)?
+                }
             }
         }
         Ok(intermediate)
@@ -544,6 +548,53 @@ impl Core {
     ) -> Result<QuerySuccess<'a>> {
         let intermediate = QuerySuccess::from_pair(addr, typ);
         self.filter_inner(filter, intermediate)
+    }
+
+    fn step_cast(&self, cast: &query::Cast, inner: &mut Addresses) -> Result<()> {
+        let typ = self
+            .pack
+            .lookup_type_byname(&cast.typ.name)
+            .and_then(|v| v.first())
+            .map(|t| *t)
+            .ok_or_else(|| Error::TypeMissing(cast.typ.span.clone()))?;
+        if let Some(pf) = &cast.pf {
+            let mut offset = 0;
+            let mut inner_typ = typ;
+            for suf in &pf.suffixes {
+                match suf {
+                    query::Suffix::Index(Some(i), ..) => unimplemented!(),
+                    query::Suffix::Member(sym) => {
+                        let (next_offset, next_typ) = self
+                            .pack
+                            .offset_of(&sym.name, &inner_typ)
+                            .ok_or_else(|| {
+                            Error::MemberMissing(sym.span.clone(), sym.name.clone(), "".to_string())
+                        })?;
+                        offset += next_offset;
+                        inner_typ = next_typ;
+                    }
+                    _ => unimplemented!(),
+                }
+            }
+            let expected = self
+                .pack
+                .type_to_string(self.pack.remove_typedef(inner_typ));
+            let found = self
+                .pack
+                .type_to_string(self.pack.remove_typedef(inner.typ));
+            if expected != found {
+                Err(Error::TypeMismatch {
+                    span: pf.span.clone(),
+                    expected: expected.unwrap_or_else(|| "<unknown>".to_string()),
+                    found: found.unwrap_or_else(|| "<unknown>".to_string()),
+                })?;
+            }
+            for (_, addr) in &mut inner.addrs {
+                *addr = addr.wrapping_add(offset as u32);
+            }
+        }
+        inner.typ = typ;
+        Ok(())
     }
 
     fn step_backtrace<'a>(

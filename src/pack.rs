@@ -941,6 +941,13 @@ impl Pack {
         }
     }
 
+    pub fn remove_typedef(&self, gid: Gid) -> Gid {
+        match self.typedefs.get(&gid) {
+            None => gid,
+            Some(TypeDef { typ, .. }) => self.remove_typedef(*typ),
+        }
+    }
+
     /// Return a mapping of offset to members at that offset for a struct.
     /// Flattens inner anonymous structures so that their members appear as members
     /// of the struct given. This matches C.
