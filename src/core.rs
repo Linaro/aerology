@@ -632,7 +632,13 @@ impl Core {
             .filter_map(|(&k, &a)| {
                 self.read_into(a, &mut bytes).ok()?;
                 let out = u32::from_le_bytes(bytes);
-                Some((k, out))
+                // We're deferencing, so all 0 values are dropped, as they're
+                // Null pointers.
+                if out != 0 {
+                    Some((k, out))
+                } else {
+                    None
+                }
             })
             .collect();
         intermediate.typ = dest_type;

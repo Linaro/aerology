@@ -914,8 +914,7 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
     print!("{}", bt);
     let zthreads = core.query(&ZTHREADS.parse().unwrap());
     if let Ok(threads) = zthreads {
-        let z_reg_queries = maplit::btreemap! {
-            Reg::Pc => (".arch.mode".parse().unwrap(), Some(Box::new(|m| 0xffffff00u32 | m >> 8))),
+        let mut z_reg_queries: BTreeMap<_, (_, Option<Box<dyn Fn(u32) -> u32>>)> = maplit::btreemap! {
             Reg::PspNs => (".callee_saved.psp".parse().unwrap(), None),
             Reg::R4 => (".callee_saved.v1".parse().unwrap(), None),
             Reg::R5 => (".callee_saved.v2".parse().unwrap(), None),
@@ -926,18 +925,35 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
             Reg::R10 => (".callee_saved.v7".parse().unwrap(), None),
             Reg::R11 => (".callee_saved.v8".parse().unwrap(), None),
         };
+        if let Some(_) = core.pack.lookup_type_byname("struct _thread_arch").and_then(|typs|
+            typs.iter().find_map(|t| core.pack.offset_of("mode", t))
+        ) {
+            // If we have a mode member in the arch struct, we have userspace to worry about
+            // and we should use it.
+            z_reg_queries.insert(
+                Reg::Pc,
+                (".arch.mode".parse().unwrap(), Some(Box::new(|m| 0xffffff00u32 | m >> 8)))
+            );
+        } else {
+            // Default to a member that can't be missing
+            z_reg_queries.insert(
+                Reg::Pc,
+                (".arch.swap_return_value".parse().unwrap(), Some(Box::new(|_| 0xffffffbcu32)))
+            );
+        }
         let mut names = core.filter_inner(&[".name".parse().unwrap()], threads.clone())?;
-        let regs = core.fill_registers(threads.clone(), z_reg_queries)?;
-        for (key, regset) in regs.into_iter() {
-            let mut name_thunk = || {
-                let all = names.as_mut_addrs()?;
-                let addr = all.addrs.get(&key)?;
-                let val = core.symbol_value(all.typ, *addr)?;
-                val.into_cstr()
-            };
-            let name = name_thunk().unwrap_or_else(|| format!("{:08x}", key));
-            println!("Thread zephyr::{}", name);
-            print_thread_bt(&core, regset, args.regs);
+        if let Ok(regs) = core.fill_registers(threads.clone(), z_reg_queries) {
+            for (key, regset) in regs.into_iter() {
+                let mut name_thunk = || {
+                    let all = names.as_mut_addrs()?;
+                    let addr = all.addrs.get(&key)?;
+                    let val = core.symbol_value(all.typ, *addr)?;
+                    val.into_cstr()
+                };
+                let name = name_thunk().unwrap_or_else(|| format!("{:08x}", key));
+                println!("Thread zephyr::{}", name);
+                print_thread_bt(&core, regset, args.regs);
+            }
         }
     }
     let t_threads = core.query(&TTHREADS.parse().unwrap());
