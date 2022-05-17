@@ -562,7 +562,7 @@ impl Core {
             let mut inner_typ = typ;
             for suf in &pf.suffixes {
                 match suf {
-                    query::Suffix::Index(Some(i), ..) => unimplemented!(),
+                    query::Suffix::Index(Some(_), ..) => unimplemented!(),
                     query::Suffix::Member(sym) => {
                         let (next_offset, next_typ) = self
                             .pack
@@ -583,11 +583,28 @@ impl Core {
                 .pack
                 .type_to_string(self.pack.remove_typedef(inner.typ));
             if expected != found {
-                Err(Error::TypeMismatch {
+                let mkerr = || Error::TypeMismatch {
                     span: pf.span.clone(),
-                    expected: expected.unwrap_or_else(|| "<unknown>".to_string()),
-                    found: found.unwrap_or_else(|| "<unknown>".to_string()),
-                })?;
+                    expected: expected.clone().unwrap_or_else(|| "<unknown>".to_string()),
+                    found: found.clone().unwrap_or_else(|| "<unknown>".to_string()),
+                };
+                if let Some(pack::Typ::Ptr(ptr)) = self.pack.lookup_type(inner.typ) {
+                    if let Some(ptrtyp) = ptr.typ {
+                        let found = self
+                            .pack
+                            .type_to_string(self.pack.remove_typedef(ptrtyp));
+                        if expected != found {
+                            Err(mkerr())?
+                        }
+                        if let Err(_) = self.step_by_deref(ptr, inner, pf.span.clone()) {
+                            Err(mkerr())?
+                        }
+                    } else {
+                        Err(mkerr())?
+                    }
+                } else {
+                    Err(mkerr())?
+                }
             }
             for (_, addr) in &mut inner.addrs {
                 *addr = addr.wrapping_add(offset as u32);
