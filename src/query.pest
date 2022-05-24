@@ -8,9 +8,14 @@ number = { ASCII_DIGIT+ }
 index = { "[" ~ number? ~ "]" }
 global = { (symbol ~ "::")? ~ symbol }
 deref = { ".*" }
+type_qualifier = { "const" | "volatile" | "restrict" | "static" }
+struct_or_union = { "struct" | "union" }
+typename = { type_qualifier* ~ struct_or_union? ~ symbol ~ "*"* }
+typecast = { "(" ~ typename ~ ")"}
+cast = { "cast" ~ typecast ~ postfix? }
 postfix = { (member | index | deref)+ }
 reg_assignment = { symbol ~ "=" ~ postfix }
 backtrace = { "bt" ~ (reg_assignment)* }
 llnodes = { "llnodes" ~ member }
-filter = { postfix | backtrace | llnodes }
+filter = { postfix | backtrace | llnodes | cast }
 query = _{ SOI ~ global ~ postfix? ~ ("=>" ~ filter)* ~ EOI } 

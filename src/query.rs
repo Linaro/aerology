@@ -131,10 +131,33 @@ impl RegAssignment {
 }
 
 #[derive(Debug)]
+pub struct Cast {
+    pub typ: Symbol,
+    pub pf: Option<Postfix>,
+}
+
+impl Cast {
+    fn from_pair(p: Pair) -> Self {
+        let mut typ = None;
+        let mut pf = None;
+        for pair in p.into_inner() {
+            match pair.as_rule() {
+                Rule::typecast => typ = Some(Symbol::from_pair(&pair.into_inner().next().unwrap())),
+                Rule::postfix => pf = Some(Postfix::from_pair(pair)),
+                _ => unreachable!(),
+            }
+        }
+        let typ = typ.unwrap();
+        Self { typ, pf }
+    }
+}
+
+#[derive(Debug)]
 pub enum Filter {
     Expr(Postfix),
     LLNodes(Postfix),
     Backtrace(SourceSpan, Vec<RegAssignment>),
+    Cast(Cast),
 }
 
 impl Filter {
@@ -146,6 +169,7 @@ impl Filter {
                 p.into_inner().map(RegAssignment::from_pair).collect(),
             ),
             Rule::llnodes => Self::LLNodes(Postfix::from_pair(p)),
+            Rule::cast => Self::Cast(Cast::from_pair(p)),
             _ => unreachable!(),
         }
     }
@@ -155,6 +179,10 @@ impl Filter {
             Self::Backtrace(span, ..)
             | Self::LLNodes(Postfix { span, .. })
             | Self::Expr(Postfix { span, .. }) => span.clone(),
+            Self::Cast(Cast {
+                typ: Symbol { span, .. },
+                ..
+            }) => span.clone(),
         }
     }
 }
