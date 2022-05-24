@@ -221,10 +221,11 @@ $ aerology query dhcpv4_client.core.0  zephyr::_kernel.threads.name
 
 ## Filters
 
-At the moment, 3 filters are supported:
+At the moment, 4 filters are supported:
  * Postfix operators.
  * Reading a linked list with `llnodes`
  * Creating a bactrace with `bt`
+ * Casting, with intrusive struct type checking
 
 ### Postfix operators
 
@@ -313,3 +314,56 @@ $ aerology query dhcpv4_client.core.0 'tfm_s::partition_listhead => llnodes .nex
 > operations, we cannot construct a valid value for the pc.
 
 > Note: we place the exception payload in pc, not the lr.
+
+### Cast
+
+The cast filter allows type conversion, or convert to an outer type of an
+intrusive data structures.
+
+Cast has the form:
+
+```
+cast (<type>)<optional-postfix-member>
+```
+
+without the postfix member, a simple cast is performed, converting the type of
+the query to the one specified in the cast filter.
+
+For example, to get the name of the head of the thread in the run queue:
+
+```
+$ aerology query dhcpv4_client.core.4 '_kernel.ready_q.runq.head.next => cast (struct k_thread) => .name'
+21000f10: (char[32]) "main"
+```
+
+With a postfix member, an intrusive data structure cast is performed. An
+intrusive cast provides type checking, and automatic dereferencing.
+An intrusive cast treats the type as the destination type and the postfix member
+as the sorce type, using the postfix member to compute the offset within the
+destination type.
+Further, the source type is checked with the type of the input.
+If the type of the source is dereferenceable (in one step) from the input type
+the derefrence is performed.
+If the type of the source is does not match or is derefrenceable from the input
+type, then a type error is raised.
+
+For example, the same query as before, using an intrusive cast:
+```
+$ aerology query dhcpv4_client.core.4 '_kernel.ready_q.runq.head => cast (struct k_thread).base.qnode_dlist => .name'
+21000f10: (char[32]) "main"
+```
+
+> Note: the above query includes a derefrence as part of the cast filter.
+
+And if you omit the head member, creating a type error:
+
+```
+$ target/debug/aerology query dhcpv4_client.core.4 '_kernel.ready_q => cast (struct k_thread).base.qnode_dlist => .name'
+Error:
+  × type mismatch
+   ┌─[command-line:1:1]
+ 1 │ _kernel.ready_q => cast (struct k_thread).base.qnode_dlist => .name
+   ·                                          ────────┬────────
+   ·                                                  └── expected struct _dnode found struct _ready_q
+   └────
+```
