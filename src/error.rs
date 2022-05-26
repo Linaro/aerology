@@ -5,6 +5,14 @@ use pest::error::Error as PErr;
 use thiserror::Error;
 
 #[derive(Error, Diagnostic, Debug)]
+#[error("Result Dropped")]
+#[diagnostic(severity(warn))]
+pub struct DroppedResult {
+    #[label("dropped an element here")]
+    pub span: SourceSpan,
+}
+
+#[derive(Error, Diagnostic, Debug)]
 pub enum Error {
     #[error(transparent)]
     IoError(#[from] std::io::Error),
@@ -31,6 +39,14 @@ pub enum Error {
         span: SourceSpan,
         expected: String,
         found: String,
+    },
+    #[error("Query returned no results")]
+    #[diagnostic()]
+    NoResults {
+        #[label("no results")]
+        span: SourceSpan,
+        #[related]
+        also: Vec<DroppedResult>,
     },
     #[error("Array bounds unknown")]
     UnsizedArray(#[label] SourceSpan),

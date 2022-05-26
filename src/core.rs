@@ -10,7 +10,7 @@ use goblin::elf::Elf;
 
 use miette::SourceSpan;
 
-use crate::error::{enumerate, Error, Result};
+use crate::error::{enumerate, DroppedResult, Error, Result};
 use crate::pack::{self, Gid, Pack, Symbol, Variable, AEROLOGY_NOTES_NAME, AEROLOGY_TYPE_REGS};
 use crate::query;
 
@@ -234,9 +234,17 @@ impl Default for Registers {
 
 #[derive(Debug, Clone)]
 pub struct Addresses {
+    /// The type of this address set.
     pub typ: Gid,
+    /// The addresses, indexded by it's origin. The keys be used
+    /// to match a query result to it's source.
     pub addrs: BTreeMap<u32, u32>,
+    /// When an address is dropped from the set by part of a query
+    /// we record it here so that we can use that in an error message
+    /// in case we have an empty result.
+    pub dropped: Vec<SourceSpan>,
 }
+
 #[derive(Debug, Clone)]
 pub enum QuerySuccess<'a> {
     Addresses(Addresses),
@@ -492,7 +500,11 @@ impl Core {
             }
         }
         let addrs = globals.into_iter().map(|(a, _)| (a, a)).collect();
-        let intermediate = QuerySuccess::Addresses(Addresses { addrs, typ });
+        let intermediate = QuerySuccess::Addresses(Addresses {
+            addrs,
+            typ,
+            dropped: Vec::new(),
+        });
         self.filter_inner(&query.filters, intermediate)
     }
 
@@ -656,8 +668,9 @@ impl Core {
         let mut all_nodes = heads.clone();
         loop {
             let step = self.step_by_postfix(pf, intermediate);
-            if let Err(Error::InvalidAddress(_)) = step {
-                break;
+            match step {
+                Err(Error::InvalidAddress(_) | Error::NoResults { .. }) => break,
+                _ => (),
             }
             let _ = step?;
             if intermediate.addrs == heads.addrs || intermediate.addrs.is_empty() {
@@ -681,7 +694,8 @@ impl Core {
     ) -> Result<()> {
         assert!(ptr.size == 4);
         let mut bytes = [0u8; 4];
-        let dest_type = ptr.typ.ok_or_else(|| Error::UnsizedType(span))?;
+        let dest_type = ptr.typ.ok_or_else(|| Error::UnsizedType(span.clone()))?;
+        let before_len = intermediate.addrs.len();
         intermediate.addrs = intermediate
             .addrs
             .iter()
@@ -697,6 +711,20 @@ impl Core {
                 }
             })
             .collect();
+        if intermediate.addrs.is_empty() {
+            let also = intermediate
+                .dropped
+                .iter()
+                .map(|span| DroppedResult { span: span.clone() })
+                .collect();
+            Err(Error::NoResults {
+                span: span.clone(),
+                also,
+            })?
+        }
+        if intermediate.addrs.len() < before_len {
+            intermediate.dropped.push(span);
+        }
         intermediate.typ = dest_type;
         Ok(())
     }

@@ -665,7 +665,7 @@ fn query_symbols(
 
     let success = bail_src!(core.query(&q), query.clone());
     match success {
-        QuerySuccess::Addresses(Addresses { addrs, typ }) => {
+        QuerySuccess::Addresses(Addresses { addrs, typ, .. }) => {
             if structure {
                 println!(
                     " type {}",
