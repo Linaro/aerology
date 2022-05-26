@@ -663,44 +663,41 @@ fn query_symbols(
     let q: Query = bail_src!(query.clone().parse(), query.clone());
     let core: Core = pack_file.try_into()?;
 
-    let addresses = core.global_addr(&q.global);
-    for (addr, typ) in addresses.into_iter() {
-        let success = bail_src!(core.filter(&q.filters, addr, typ), query.clone());
-        match success {
-            QuerySuccess::Addresses(Addresses { addrs, typ }) => {
-                if structure {
+    let success = bail_src!(core.query(&q), query.clone());
+    match success {
+        QuerySuccess::Addresses(Addresses { addrs, typ }) => {
+            if structure {
+                println!(
+                    " type {}",
+                    core.pack
+                        .type_to_string(typ)
+                        .as_deref()
+                        .unwrap_or("unknwon")
+                );
+                let s = core.pack.lookup_struct(typ);
+                let m = s.as_ref().and_then(|s| core.pack.struct_members(s));
+                if let Some(pack::Struct { name, .. }) = s {
                     println!(
-                        " type {}",
-                        core.pack
-                            .type_to_string(typ)
-                            .as_deref()
-                            .unwrap_or("unknwon")
+                        "layout of struct {} {{",
+                        name.as_deref().unwrap_or("<anonymous>")
                     );
-                    let s = core.pack.lookup_struct(typ);
-                    let m = s.as_ref().and_then(|s| core.pack.struct_members(s));
-                    if let Some(pack::Struct { name, .. }) = s {
-                        println!(
-                            "layout of struct {} {{",
-                            name.as_deref().unwrap_or("<anonymous>")
-                        );
-                    }
-                    if let Some(m) = m {
-                        for (offset, members) in m.iter() {
-                            for pack::Member { name, typ, .. } in members {
-                                let type_string = core
-                                    .pack
-                                    .type_to_string(typ.clone())
-                                    .unwrap_or_else(|| format!("Missing{:x?}", typ));
-                                let name_string = name.as_deref().unwrap_or("<anonymous>");
-                                println!("{: >6}: {: <20} {}", offset, type_string, name_string);
-                            }
+                }
+                if let Some(m) = m {
+                    for (offset, members) in m.iter() {
+                        for pack::Member { name, typ, .. } in members {
+                            let type_string = core
+                                .pack
+                                .type_to_string(typ.clone())
+                                .unwrap_or_else(|| format!("Missing{:x?}", typ));
+                            let name_string = name.as_deref().unwrap_or("<anonymous>");
+                            println!("{: >6}: {: <20} {}", offset, type_string, name_string);
                         }
                     }
-                    if s.is_some() {
-                        println!("}}");
-                    }
-                    continue;
                 }
+                if s.is_some() {
+                    println!("}}");
+                }
+            } else {
                 for a in addrs.into_values() {
                     if hex_dump {
                         if let Some(size) = core.pack.size_of(typ) {
@@ -719,14 +716,14 @@ fn query_symbols(
                     }
                 }
             }
-            QuerySuccess::Backtraces(bts) => {
-                for (addr, bt) in bts {
-                    if bt.frames.is_empty() {
-                        continue;
-                    }
-                    println!("{:08x}:", addr);
-                    print!("{}", bt);
+        }
+        QuerySuccess::Backtraces(bts) => {
+            for (addr, bt) in bts {
+                if bt.frames.is_empty() {
+                    continue;
                 }
+                println!("{:08x}:", addr);
+                print!("{}", bt);
             }
         }
     }

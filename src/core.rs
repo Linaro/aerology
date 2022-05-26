@@ -244,13 +244,6 @@ pub enum QuerySuccess<'a> {
 }
 
 impl<'a> QuerySuccess<'a> {
-    fn from_pair(addr: u32, typ: Gid) -> Self {
-        let addrs = maplit::btreemap! {
-            addr => addr
-        };
-        Self::Addresses(Addresses { addrs, typ })
-    }
-
     pub fn as_mut_addrs<'b>(&'b mut self) -> Option<&'b mut Addresses> {
         if let Self::Addresses(addrs) = self {
             Some(addrs)
@@ -538,16 +531,6 @@ impl Core {
             }
         }
         Ok(intermediate)
-    }
-
-    pub fn filter<'a>(
-        &'a self,
-        filter: &[query::Filter],
-        addr: u32,
-        typ: Gid,
-    ) -> Result<QuerySuccess<'a>> {
-        let intermediate = QuerySuccess::from_pair(addr, typ);
-        self.filter_inner(filter, intermediate)
     }
 
     fn step_cast(&self, cast: &query::Cast, inner: &mut Addresses) -> Result<()> {
