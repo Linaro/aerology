@@ -468,10 +468,15 @@ impl Core {
     pub fn query<'a>(&'a self, query: &query::Query) -> Result<QuerySuccess<'a>> {
         let globals = self.global_addr(&query.global);
         let (_, typ) = globals.first().ok_or_else(|| {
+            let similar: Vec<_> = self
+                .pack
+                .similar_symbol(&query.global.sym.name)
+                .into_iter()
+                .collect();
             Error::MemberMissing(
                 query.global.span.clone(),
                 query.global.sym.name.clone(),
-                "".to_string(),
+                enumerate(&similar),
             )
         })?;
         let typ = *typ;
