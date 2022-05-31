@@ -10,7 +10,7 @@ use goblin::elf::Elf;
 
 use miette::SourceSpan;
 
-use crate::error::{enumerate, Error, Result};
+use crate::error::{enumerate, DroppedResult, Error, Result};
 use crate::pack::{self, Gid, Pack, Symbol, Variable, AEROLOGY_NOTES_NAME, AEROLOGY_TYPE_REGS};
 use crate::query;
 
@@ -234,9 +234,17 @@ impl Default for Registers {
 
 #[derive(Debug, Clone)]
 pub struct Addresses {
+    /// The type of this address set.
     pub typ: Gid,
+    /// The addresses, indexded by it's origin. The keys be used
+    /// to match a query result to it's source.
     pub addrs: BTreeMap<u32, u32>,
+    /// When an address is dropped from the set by part of a query
+    /// we record it here so that we can use that in an error message
+    /// in case we have an empty result.
+    pub dropped: Vec<SourceSpan>,
 }
+
 #[derive(Debug, Clone)]
 pub enum QuerySuccess<'a> {
     Addresses(Addresses),
@@ -244,13 +252,6 @@ pub enum QuerySuccess<'a> {
 }
 
 impl<'a> QuerySuccess<'a> {
-    fn from_pair(addr: u32, typ: Gid) -> Self {
-        let addrs = maplit::btreemap! {
-            addr => addr
-        };
-        Self::Addresses(Addresses { addrs, typ })
-    }
-
     pub fn as_mut_addrs<'b>(&'b mut self) -> Option<&'b mut Addresses> {
         if let Self::Addresses(addrs) = self {
             Some(addrs)
@@ -475,10 +476,15 @@ impl Core {
     pub fn query<'a>(&'a self, query: &query::Query) -> Result<QuerySuccess<'a>> {
         let globals = self.global_addr(&query.global);
         let (_, typ) = globals.first().ok_or_else(|| {
+            let similar: Vec<_> = self
+                .pack
+                .similar_symbol(&query.global.sym.name)
+                .into_iter()
+                .collect();
             Error::MemberMissing(
                 query.global.span.clone(),
                 query.global.sym.name.clone(),
-                "".to_string(),
+                enumerate(&similar),
             )
         })?;
         let typ = *typ;
@@ -494,7 +500,11 @@ impl Core {
             }
         }
         let addrs = globals.into_iter().map(|(a, _)| (a, a)).collect();
-        let intermediate = QuerySuccess::Addresses(Addresses { addrs, typ });
+        let intermediate = QuerySuccess::Addresses(Addresses {
+            addrs,
+            typ,
+            dropped: Vec::new(),
+        });
         self.filter_inner(&query.filters, intermediate)
     }
 
@@ -538,16 +548,6 @@ impl Core {
             }
         }
         Ok(intermediate)
-    }
-
-    pub fn filter<'a>(
-        &'a self,
-        filter: &[query::Filter],
-        addr: u32,
-        typ: Gid,
-    ) -> Result<QuerySuccess<'a>> {
-        let intermediate = QuerySuccess::from_pair(addr, typ);
-        self.filter_inner(filter, intermediate)
     }
 
     fn step_cast(&self, cast: &query::Cast, inner: &mut Addresses) -> Result<()> {
@@ -668,8 +668,9 @@ impl Core {
         let mut all_nodes = heads.clone();
         loop {
             let step = self.step_by_postfix(pf, intermediate);
-            if let Err(Error::InvalidAddress(_)) = step {
-                break;
+            match step {
+                Err(Error::InvalidAddress(_) | Error::NoResults { .. }) => break,
+                _ => (),
             }
             let _ = step?;
             if intermediate.addrs == heads.addrs || intermediate.addrs.is_empty() {
@@ -693,7 +694,8 @@ impl Core {
     ) -> Result<()> {
         assert!(ptr.size == 4);
         let mut bytes = [0u8; 4];
-        let dest_type = ptr.typ.ok_or_else(|| Error::UnsizedType(span))?;
+        let dest_type = ptr.typ.ok_or_else(|| Error::UnsizedType(span.clone()))?;
+        let before_len = intermediate.addrs.len();
         intermediate.addrs = intermediate
             .addrs
             .iter()
@@ -709,6 +711,20 @@ impl Core {
                 }
             })
             .collect();
+        if intermediate.addrs.is_empty() {
+            let also = intermediate
+                .dropped
+                .iter()
+                .map(|span| DroppedResult { span: span.clone() })
+                .collect();
+            Err(Error::NoResults {
+                span: span.clone(),
+                also,
+            })?
+        }
+        if intermediate.addrs.len() < before_len {
+            intermediate.dropped.push(span);
+        }
         intermediate.typ = dest_type;
         Ok(())
     }

@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use goblin::elf::Elf;
 
+use strsim::levenshtein;
+
 use zip::read::ZipArchive;
 
 use crate::error::{Error, Result};
@@ -934,6 +936,21 @@ impl Pack {
         }
         out
     }
+
+    pub fn similar_symbol<'a>(&'a self, name: &'_ str) -> BTreeSet<&'a str> {
+        let mut out: BTreeMap<_, BTreeSet<&'a str>> = BTreeMap::new();
+        for sym in self
+            .dwarf_functions_byname
+            .keys()
+            .chain(self.elf_syms_byname.keys())
+            .chain(self.dwarf_vars.keys())
+        {
+            let similarity = levenshtein(name, sym);
+            out.entry(similarity).or_default().insert(sym);
+        }
+        out.into_values().next().unwrap_or_default()
+    }
+
     pub fn lookup_struct(&self, gid: Gid) -> Option<&Struct> {
         match self.typedefs.get(&gid) {
             None => self.structs.get(&gid),
