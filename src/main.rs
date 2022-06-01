@@ -652,6 +652,10 @@ macro_rules! bail_src {
     };
 }
 
+fn needs_core(from: Result<Core>) -> Result<Core> {
+    from.context("Core file not recognized. Did you provide the zap by mistake?")
+}
+
 fn query_symbols(
     QueryArgs {
         pack_file,
@@ -661,7 +665,7 @@ fn query_symbols(
     }: QueryArgs,
 ) -> Result<()> {
     let q: Query = bail_src!(query.clone().parse(), query.clone());
-    let core: Core = pack_file.try_into()?;
+    let core: Core = needs_core(pack_file.try_into().into_diagnostic())?;
 
     let success = bail_src!(core.query(&q), query.clone());
     match success {
@@ -828,7 +832,7 @@ const TTHREADS: &str = "tfm_s::partition_listhead => llnodes .next => .*";
 
 fn print_stacks(args: DtsArgs) -> Result<()> {
     let zthreads_query: Query = ZTHREADS.parse().unwrap();
-    let core: Core = args.pack_file.try_into()?;
+    let core: Core = needs_core(args.pack_file.try_into().into_diagnostic())?;
     let mut out = Vec::new();
     if let Ok(threads) = core.query(&zthreads_query) {
         out.extend(z_stacks(&core, threads).unwrap_or_default().into_iter());
@@ -903,7 +907,7 @@ fn print_thread_bt(core: &Core, regs: Registers, print_regs: bool) {
 }
 
 fn print_backtrace(args: BtArgs) -> Result<()> {
-    let core: Core = args.pack_file.try_into()?;
+    let core: Core = needs_core(args.pack_file.try_into().into_diagnostic())?;
     let regs = core.registers();
     println!("Registers");
     let mut bt = core.backtrace(regs);
@@ -974,7 +978,7 @@ fn print_backtrace(args: BtArgs) -> Result<()> {
 }
 
 fn decode_exc(args: BtArgs) -> Result<()> {
-    let core: Core = args.pack_file.try_into()?;
+    let core: Core = needs_core(args.pack_file.try_into().into_diagnostic())?;
     let mut buf = [0u8; 4];
     if core.read_into(SFSR::ADDR, &mut buf).is_ok() {
         if let Some(sfsr) = SFSR::from_bits(u32::from_le_bytes(buf.clone())) {
