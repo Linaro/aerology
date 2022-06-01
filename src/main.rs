@@ -56,12 +56,14 @@ struct PackArgs {
 #[derive(Parser, Debug)]
 struct DtsArgs {
     /// A pack file or core dump to extract info from
+    #[clap(name="CORE_FILE")]
     pack_file: PathBuf,
 }
 
 #[derive(Parser, Debug)]
 struct BtArgs {
     /// A core dump to extract info from
+    #[clap(name="CORE_FILE")]
     pack_file: PathBuf,
     /// Include registers in the backtraces
     #[clap(short, long)]
@@ -71,6 +73,7 @@ struct BtArgs {
 #[derive(Parser, Debug)]
 struct QueryArgs {
     /// A core dump to extract info from
+    #[clap(name="CORE_FILE")]
     pack_file: PathBuf,
     /// The query inself
     query: String,
@@ -85,6 +88,7 @@ struct QueryArgs {
 #[derive(Parser, Debug)]
 struct SegmentsArgs {
     /// A pack file or core dump to extract info from
+    #[clap(name="CORE_OR_ZAP_FILE")]
     pack_file: PathBuf,
     /// Create a summary based on program headers
     #[clap(short, long)]
@@ -93,6 +97,7 @@ struct SegmentsArgs {
 #[derive(Parser, Debug)]
 struct DisArgs {
     /// A pack file or core dump to disassemble from
+    #[clap(name="ZAP_FILE")]
     pack_file: PathBuf,
     /// A symbol, with an optional executable separated by '::'
     symbol: String,
@@ -104,6 +109,7 @@ struct DumpArgs {
     #[clap(short, long)]
     gdb_port: Option<u16>,
     /// Dump the segments from this pack file or core dump
+    #[clap(name="ZAP_FILE")]
     pack_file: PathBuf,
     /// Dump into this file
     dump_file: Option<PathBuf>,
