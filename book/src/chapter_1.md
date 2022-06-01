@@ -10,6 +10,3 @@ At the time of writing it is able to provide convinient access to:
  * stack usage by thread, with the `stacks` subcommand
  * backtraces by thread, with the `backtrace` subcommand
  * and general purpose queries beginning with global variables, with the `query` subcommand
-
-This book in structured as a case study of a particular bug, and will assume
-familiarity with both Zephyr and TF-M, where appropriate.
