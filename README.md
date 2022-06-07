@@ -52,7 +52,7 @@ The current workflow looks something like:
 Pretty-Print all of the tfm partition control context structures:
 
 ```
-    ;aerology symbol-value dhcpv4_client.core.0 'partition_listhead.llnodes(next).ctx_ctrl'
+    ;aerology query dhcpv4_client.core.0 'partition_listhead => llnodes. next => .ctx_ctrl'
 3000bf60: (struct context_ctrl_t) {
     .sp = (uint32_t) 805347216 /*0x30009f90*/,
     .sp_limit = (uint32_t) 805339336 /*0x300080c8*/,
