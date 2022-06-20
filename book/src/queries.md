@@ -9,7 +9,7 @@ in a C-style fromat or a hexdump.
 
 The syntax of a query is inspired by `jq`, and many of the operators are postfix.
 An Aerology query is structured as a global, with optional postfix operators,
-followed by zero or more `=>` separated "filters".
+followed by zero or more `|` separated "filters".
 
 ### Global
 Unlike `jq`, the initial value is provided by global optionally prefixed with a
@@ -231,16 +231,16 @@ At the moment, 4 filters are supported:
 
 Postfix operators may be used as a filter by themselves.
 Using an example from the prior section, we may query the name of the head of
-the thread list including the filter separator `=>` in a few more places.
+the thread list including the filter separator `|` in a few more places.
 
 ```bash
-$ aerology query dhcpv4_client.core.0  'zephyr::_kernel => .threads.name'
+$ aerology query dhcpv4_client.core.0  'zephyr::_kernel | .threads.name'
 21000fd0: (char[32]) "sysworkq"
 
-$ aerology  query dhcpv4_client.core.0  'zephyr::_kernel => .threads => .name'
+$ aerology  query dhcpv4_client.core.0  'zephyr::_kernel | .threads | .name'
 21000fd0: (char[32]) "sysworkq"
 
-$ aerology query dhcpv4_client.core.0  'zephyr::_kernel.threads => .name'
+$ aerology query dhcpv4_client.core.0  'zephyr::_kernel.threads | .name'
 o21000fd0: (char[32]) "sysworkq"
 ```
 
@@ -254,7 +254,7 @@ For example, to get the names of all of the threads in the system, we may
 use the following query:
 
 ```bash
-$ aerology query dhcpv4_client.core.0 'zephyr::_kernel.threads => llnodes .next_thread => .name'
+$ aerology query dhcpv4_client.core.0 'zephyr::_kernel.threads | llnodes .next_thread | .name'
 21000e58: (char[32]) "idle 00"
 210008c8: (char[32]) "logging"
 21000f10: (char[32]) "main"
@@ -276,7 +276,7 @@ described by its arguments.
 For example, we can take a backtrace of every thread in TFM with the
 following query:
 ```
-$ aerology query dhcpv4_client.core.0 'tfm_s::partition_listhead => llnodes .next => bt pc=.ctx_ctrl.exc_ret psp_s=.ctx_ctrl.sp'
+$ aerology query dhcpv4_client.core.0 'tfm_s::partition_listhead | llnodes .next | bt pc=.ctx_ctrl.exc_ret psp_s=.ctx_ctrl.sp'
 3000bfcc:
   ╞═ Exception Handler Called
   ├─ 11008e70 in tfm_arch_trigger_pendsv
@@ -332,7 +332,7 @@ the query to the one specified in the cast filter.
 For example, to get the name of the head of the thread in the run queue:
 
 ```
-$ aerology query dhcpv4_client.core.4 '_kernel.ready_q.runq.head.next => cast (struct k_thread) => .name'
+$ aerology query dhcpv4_client.core.4 '_kernel.ready_q.runq.head.next | cast (struct k_thread) | .name'
 21000f10: (char[32]) "main"
 ```
 
@@ -349,7 +349,7 @@ type, then a type error is raised.
 
 For example, the same query as before, using an intrusive cast:
 ```
-$ aerology query dhcpv4_client.core.4 '_kernel.ready_q.runq.head => cast (struct k_thread).base.qnode_dlist => .name'
+$ aerology query dhcpv4_client.core.4 '_kernel.ready_q.runq.head | cast (struct k_thread).base.qnode_dlist | .name'
 21000f10: (char[32]) "main"
 ```
 
@@ -358,12 +358,12 @@ $ aerology query dhcpv4_client.core.4 '_kernel.ready_q.runq.head => cast (struct
 And if you omit the head member, creating a type error:
 
 ```
-$ target/debug/aerology query dhcpv4_client.core.4 '_kernel.ready_q => cast (struct k_thread).base.qnode_dlist => .name'
+$ target/debug/aerology query dhcpv4_client.core.4 '_kernel.ready_q | cast (struct k_thread).base.qnode_dlist | .name'
 Error:
   × type mismatch
    ┌─[command-line:1:1]
- 1 │ _kernel.ready_q => cast (struct k_thread).base.qnode_dlist => .name
-   ·                                          ────────┬────────
-   ·                                                  └── expected struct _dnode found struct _ready_q
+ 1 │ _kernel.ready_q | cast (struct k_thread).base.qnode_dlist | .name
+   ·                                         ────────┬────────
+   ·                                                 └── expected struct _dnode found struct _ready_q
    └────
 ```

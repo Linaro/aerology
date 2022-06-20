@@ -833,8 +833,8 @@ fn tfm_stacks(core: &Core, threads: QuerySuccess) -> Option<Vec<(String, u64, u6
     Some(out)
 }
 
-const ZTHREADS: &str = "zephyr::_kernel.threads => llnodes .next_thread";
-const TTHREADS: &str = "tfm_s::partition_listhead => llnodes .next => .*";
+const ZTHREADS: &str = "zephyr::_kernel.threads | llnodes .next_thread";
+const TTHREADS: &str = "tfm_s::partition_listhead | llnodes .next | .*";
 
 fn print_stacks(args: DtsArgs) -> Result<()> {
     let zthreads_query: Query = ZTHREADS.parse().unwrap();
