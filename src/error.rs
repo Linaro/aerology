@@ -80,7 +80,7 @@ pub fn enumerate<R: Debug>(rules: &[R]) -> String {
     }
 }
 
-impl<R: Debug> From<PErr<R>> for Error {
+impl<R: Debug + Copy + std::hash::Hash + Ord> From<PErr<R>> for Error {
     fn from(perr: PErr<R>) -> Self {
         let span = match perr.location {
             pest::error::InputLocation::Pos(p) => (p, 1).into(),
