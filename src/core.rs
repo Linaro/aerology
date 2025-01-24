@@ -474,26 +474,30 @@ impl Core {
     }
 
     pub fn query<'a>(&'a self, query: &query::Query) -> Result<QuerySuccess<'a>> {
-        let globals = self.global_addr(&query.global);
+        let globals = match &query.first {
+            query::First::Global(g) => self.global_addr(&g),
+            query::First::Cast(c) => self.type_addrs(&c)
+                .ok_or_else(|| Error::TypeMissing(query.first.span().clone()))?,
+        };
         let (_, typ) = globals.first().ok_or_else(|| {
-            let similar: Vec<_> = self
-                .pack
-                .similar_symbol(&query.global.sym.name)
-                .into_iter()
-                .collect();
-            Error::MemberMissing(
-                query.global.span.clone(),
-                query.global.sym.name.clone(),
-                enumerate(&similar),
-            )
-        })?;
+                let similar: Vec<_> = self
+                    .pack
+                    .similar_symbol(query.first.name())
+                    .into_iter()
+                    .collect();
+                Error::MemberMissing(
+                    query.first.span().clone(),
+                    query.first.name().clone(),
+                    enumerate(&similar),
+                )
+            })?;
         let typ = *typ;
         let typ_name = self.pack.type_to_string(typ);
         for (_, typ) in &globals {
             let this_name = self.pack.type_to_string(*typ);
             if this_name != typ_name {
                 return Err(Error::TypeMismatch {
-                    span: query.global.span.clone(),
+                    span: query.first.span().clone(),
                     expected: typ_name.unwrap_or_else(|| "<unknown>".to_string()),
                     found: this_name.unwrap_or_else(|| "<unknown>".to_string()),
                 });
@@ -512,6 +516,27 @@ impl Core {
         let elf = global.elf.as_ref().map(|s| s.name.as_str());
         self.get_start_symbols(&global.sym.name, elf)
             .unwrap_or_default()
+    }
+
+
+    fn type_addrs(&self, cast: &query::GlobalCast) -> Option<Vec<(u32, Gid)>> {
+        let typename = &cast.typ.name;
+        let types = self
+            .pack
+            .lookup_type_byname(typename)
+            .or_else(|| {
+                eprintln!("Type lookup failed");
+                None
+            })?;
+        let mut symbols = BTreeMap::new();
+        for t in types {
+            if let Some(syms_with_type) = self.pack.symbols_with_type(t) {
+                for sym in syms_with_type {
+                    symbols.insert(sym.addr, *t);
+                }
+            }
+        }
+        Some(symbols.into_iter().collect())
     }
 
     pub fn filter_inner<'a>(
@@ -837,57 +862,40 @@ impl Core {
         start_symbol: &str,
         executable: Option<&str>,
     ) -> Option<Vec<(u32, Gid)>> {
-        if start_symbol.starts_with("(") && start_symbol.ends_with(")") {
-            let types = self
-                .pack
-                .lookup_type_byname(&start_symbol[1..start_symbol.len() - 1])?;
-            let mut symbols = BTreeMap::new();
-            for t in types {
-                if let Some(syms_with_type) = self.pack.symbols_with_type(t) {
-                    for sym in syms_with_type {
-                        if executable.is_none() || executable == self.pack.eid_to_name(sym.eid) {
-                            symbols.insert(sym.addr, *t);
-                        }
+        let mut symbols: BTreeMap<_, (_, _)> = BTreeMap::new();
+        for symlookup in self.pack.lookup_symbol(start_symbol) {
+            use crate::pack::SymLookup::*;
+            match symlookup {
+                Sym(&Symbol {
+                    addr,
+                    eid,
+                    ref name,
+                    ..
+                }) => {
+                    if executable.is_none() || executable == self.pack.eid_to_name(eid) {
+                        let entry = symbols.entry((name, eid)).or_default();
+                        entry.0 = Some(addr);
                     }
                 }
-            }
-            Some(symbols.into_iter().collect())
-        } else {
-            let mut symbols: BTreeMap<_, (_, _)> = BTreeMap::new();
-            for symlookup in self.pack.lookup_symbol(start_symbol) {
-                use crate::pack::SymLookup::*;
-                match symlookup {
-                    Sym(&Symbol {
-                        addr,
-                        eid,
-                        ref name,
-                        ..
-                    }) => {
-                        if executable.is_none() || executable == self.pack.eid_to_name(eid) {
-                            let entry = symbols.entry((name, eid)).or_default();
-                            entry.0 = Some(addr);
-                        }
+                Var(&Variable {
+                    eid, typ, ref name, ..
+                }) => {
+                    if executable.is_none() || executable == self.pack.eid_to_name(eid) {
+                        let entry = symbols.entry((name, eid)).or_default();
+                        entry.1 = Some(typ);
                     }
-                    Var(&Variable {
-                        eid, typ, ref name, ..
-                    }) => {
-                        if executable.is_none() || executable == self.pack.eid_to_name(eid) {
-                            let entry = symbols.entry((name, eid)).or_default();
-                            entry.1 = Some(typ);
-                        }
-                    }
-                    _ => {}
                 }
+                _ => {}
             }
-            let symbols = symbols
-                .into_values()
-                .filter_map(|at| match at {
-                    (Some(a), Some(t)) => Some((a, t)),
-                    _ => None,
-                })
-                .collect();
-            Some(symbols)
         }
+        let symbols = symbols
+            .into_values()
+            .filter_map(|at| match at {
+                (Some(a), Some(t)) => Some((a, t)),
+                _ => None,
+            })
+            .collect();
+        Some(symbols)
     }
 
     pub fn do_exception_return(&self, regs: &mut Registers) -> Option<Registers> {

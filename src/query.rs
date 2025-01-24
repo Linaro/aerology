@@ -60,6 +60,21 @@ impl Global {
 }
 
 #[derive(Debug)]
+pub struct GlobalCast {
+    pub typ: Symbol,
+    pub span: SourceSpan,
+}
+
+impl GlobalCast {
+    fn from_pair(pair: Pair) -> Self {
+        let span = span(&pair);
+        let pair = pair.into_inner().next().unwrap();
+        assert!(pair.as_rule() == Rule::typename);
+        Self { typ: Symbol::from_pair(&pair), span }
+    }
+}
+
+#[derive(Debug)]
 pub enum Suffix {
     Index(Option<u32>, SourceSpan),
     Member(Symbol),
@@ -151,6 +166,37 @@ impl Cast {
         Self { typ, pf }
     }
 }
+#[derive(Debug)]
+pub enum First {
+    Cast(GlobalCast),
+    Global(Global),
+}
+
+impl First {
+    fn from_pair(p: Pair) -> Self {
+        let inner = p.into_inner().next().unwrap();
+        match inner.as_rule() {
+            Rule::global => Self::Global(Global::from_pair(inner)),
+            Rule::typecast => Self::Cast(GlobalCast::from_pair(inner)),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn span(&self) -> &SourceSpan {
+        match self {
+            Self::Cast(c) => &c.span,
+            Self::Global(g) => &g.span,
+        }
+    }
+
+    pub fn name(&self) -> &String {
+        match self {
+            Self::Cast(c) => &c.typ.name,
+            Self::Global(g) => &g.sym.name,
+        }
+    }
+}
+
 
 #[derive(Debug)]
 pub enum Filter {
@@ -204,7 +250,7 @@ impl FromStr for Filter {
 
 #[derive(Debug)]
 pub struct Query {
-    pub global: Global,
+    pub first: First,
     pub filters: Vec<Filter>,
 }
 
@@ -212,17 +258,17 @@ impl FromStr for Query {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self> {
         let pairs = QueryParser::parse(Rule::query, s)?;
-        let mut global = None;
+        let mut first = None;
         let mut filters = Vec::new();
         for pair in pairs {
             match pair.as_rule() {
-                Rule::global => global = Some(Global::from_pair(pair)),
+                Rule::first => first = Some(First::from_pair(pair)),
                 Rule::postfix => filters.push(Filter::from_pair(pair)),
                 Rule::filter => filters.push(Filter::from_pair(pair.into_inner().next().unwrap())),
                 _ => (),
             }
         }
-        let global = global.unwrap();
-        Ok(Self { global, filters })
+        let first= first.unwrap();
+        Ok(Self { first, filters })
     }
 }

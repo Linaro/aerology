@@ -721,6 +721,15 @@ fn query_symbols(
                         }
                     } else if let Some(val) = core.symbol_value(typ, a) {
                         print!("{:x}: ", a);
+                        if let Some(sym) = core.pack.nearest_elf_symbol(a) {
+                            if sym.addr == a {
+                                if let Some(elfname) = core.pack.eid_to_name(sym.eid) {
+                                    print!("{}::{} = ", elfname, sym.name);
+                                } else {
+                                    print!("{} = ", sym.name);
+                                }
+                            }
+                        }
                         print_extracted_symbol(val, &core.pack);
                         println!("");
                     }

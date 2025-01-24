@@ -18,4 +18,5 @@ reg_assignment = { symbol ~ "=" ~ postfix }
 backtrace = { "bt" ~ (reg_assignment)* }
 llnodes = { "llnodes" ~ member }
 filter = { postfix | backtrace | llnodes | cast }
-query = _{ SOI ~ global ~ postfix? ~ ("|" ~ filter)* ~ EOI } 
+first = { typecast | global }
+query = _{ SOI ~ first ~ postfix? ~ ("|" ~ filter)* ~ EOI } 
